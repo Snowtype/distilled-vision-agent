@@ -45,6 +45,7 @@ final_project/
 ## Quick Start
 
 ### Option 1: Full Installation (Recommended)
+
 ```bash
 # Create virtual environment
 python3 -m venv venv
@@ -62,6 +63,7 @@ python game_agent.py
 ```
 
 ### Option 2: Core Logic Testing (No Dependencies)
+
 ```bash
 # Test basic functionality without external packages
 python3 scripts/simple_test.py
@@ -71,8 +73,9 @@ python3 scripts/test_core_logic.py
 ```
 
 ### Verified Working Components ✅
+
 - **Data Augmentation**: Algorithmic logic tested and working
-- **Visualization Tools**: Core rendering and profiling logic verified  
+- **Visualization Tools**: Core rendering and profiling logic verified
 - **Performance Profiling**: Timing and FPS calculation systems operational
 - **RL Instrumentation**: Episode logging and analysis systems functional
 - **ONNX Optimization**: Model export and inference pipeline logic validated
