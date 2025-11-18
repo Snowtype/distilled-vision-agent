@@ -72,7 +72,12 @@ secrets/
 
 # Training data collected from web
 web_app/collected_data/
+web_app/collected_gameplay/
 web_app/training_exports/
+web_app/data/
+
+# AI Agent context (local only, for agent handoff)
+.agent_context/
 
 # Temporary files
 *.tmp

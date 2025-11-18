@@ -1,462 +1,440 @@
 #!/usr/bin/env python3
 """
-Web-based Interactive Vision Game
-
-Flask 웹 애플리케이션으로 브라우저에서 플레이 가능한 게임
-GCP Cloud Run에 배포 가능
-
-Author: Minsuk Kim (mk4434)
+간단하고 확실하게 작동하는 게임
 """
 
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify
 from flask_socketio import SocketIO, emit
-import json
 import time
 import random
 import threading
-import uuid
-from datetime import datetime
+import json
 from pathlib import Path
-import sys
-
-# Add src to path
-sys.path.append(str(Path(__file__).parent.parent / "src"))
-
-# ✨ 데이터 수집 시스템 import
-try:
-    from training_data_collector import TrainingDataCollector
-    data_collector = TrainingDataCollector()
-    print("✅ 훈련 데이터 수집 시스템 활성화")
-except Exception as e:
-    print(f"⚠️ 데이터 수집 시스템 로드 실패: {e}")
-    data_collector = None
+from datetime import datetime
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'distilled-vision-agent-secret'
-socketio = SocketIO(app, cors_allowed_origins="*")
+app.config['SECRET_KEY'] = 'game-secret'
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
-# Game configuration
-GAME_CONFIG = {
-    'width': 640,
-    'height': 480,
-    'fps': 30,
-    'player_size': 40,
-    'obstacle_size': 40,
-    'player_speed': 8,
-    'jump_strength': -15,
-    'gravity': 0.8,
-    'obstacle_speed': 7
-}
+# 게임 설정
+WIDTH = 960
+HEIGHT = 720
+PLAYER_SIZE = 50
+OBSTACLE_SIZE = 50
 
-# Global game sessions
-game_sessions = {}
+# 데이터 저장 경로
+DATA_DIR = Path(__file__).parent / 'data'
+LEADERBOARD_FILE = DATA_DIR / 'leaderboard.json'
+GAMEPLAY_DIR = DATA_DIR / 'gameplay' / 'raw'
+COLLECTED_DIR = Path(__file__).parent / 'collected_gameplay'  # 훈련 데이터
 
-class WebGameSession:
-    """웹 게임 세션 관리 클래스"""
+# 디렉토리 생성
+DATA_DIR.mkdir(exist_ok=True)
+GAMEPLAY_DIR.mkdir(parents=True, exist_ok=True)
+COLLECTED_DIR.mkdir(exist_ok=True)
+
+# 활성 게임들
+games = {}
+
+# 리더보드 로드
+def load_leaderboard():
+    """리더보드 로드"""
+    if LEADERBOARD_FILE.exists():
+        with open(LEADERBOARD_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {'scores': []}
+
+def save_leaderboard(leaderboard):
+    """리더보드 저장"""
+    with open(LEADERBOARD_FILE, 'w', encoding='utf-8') as f:
+        json.dump(leaderboard, f, indent=2, ensure_ascii=False)
+
+def add_score(player_name, score, survival_time, mode, session_id):
+    """점수 추가"""
+    leaderboard = load_leaderboard()
     
-    def __init__(self, session_id):
-        self.session_id = session_id
+    leaderboard['scores'].append({
+        'player': player_name,
+        'score': score,
+        'time': round(survival_time, 2),
+        'mode': mode,
+        'date': datetime.now().isoformat(),
+        'session_id': session_id
+    })
+    
+    # 점수순 정렬 (내림차순)
+    leaderboard['scores'].sort(key=lambda x: x['score'], reverse=True)
+    
+    # 상위 100개만 유지
+    leaderboard['scores'] = leaderboard['scores'][:100]
+    
+    save_leaderboard(leaderboard)
+    return leaderboard
+
+def save_gameplay_session(game):
+    """게임 세션 저장 (팀원들의 훈련 데이터용)"""
+    # 1. 메타데이터 저장 (기존)
+    session_file = GAMEPLAY_DIR / f"session_{int(time.time())}_{game.sid[:8]}.json"
+    
+    session_data = {
+        'session_id': game.sid,
+        'mode': game.mode,
+        'score': game.score,
+        'survival_time': time.time() - game.start_time,
+        'total_frames': game.frame,
+        'final_state': {
+            'player_x': game.player_x,
+            'player_y': game.player_y,
+            'obstacles_count': len(game.obstacles)
+        },
+        'timestamp': datetime.now().isoformat()
+    }
+    
+    with open(session_file, 'w', encoding='utf-8') as f:
+        json.dump(session_data, f, indent=2, ensure_ascii=False)
+    
+    print(f"💾 게임 세션 저장: {session_file.name}")
+    
+    # 2. 훈련 데이터 저장 (State-Action-Reward)
+    if len(game.collected_states) > 0:
+        save_training_data(game, session_data)
+    
+    return str(session_file)
+
+def save_training_data(game, session_metadata):
+    """훈련 데이터 저장 (제이 & 클로용)"""
+    # 세션별 디렉토리 생성
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_dir = COLLECTED_DIR / f"session_{timestamp}_{game.mode}"
+    session_dir.mkdir(exist_ok=True)
+    
+    # 메타데이터 저장
+    metadata_file = session_dir / "metadata.json"
+    with open(metadata_file, 'w', encoding='utf-8') as f:
+        json.dump(session_metadata, f, indent=2, ensure_ascii=False)
+    
+    # State-Action-Reward 저장 (JSONL 포맷 - 클로용)
+    states_file = session_dir / "states_actions.jsonl"
+    with open(states_file, 'w', encoding='utf-8') as f:
+        for state_record in game.collected_states:
+            f.write(json.dumps(state_record, ensure_ascii=False) + '\n')
+    
+    # Bounding Box 라벨 저장 (JSONL 포맷 - 제이용)
+    bboxes_file = session_dir / "bboxes.jsonl"
+    with open(bboxes_file, 'w', encoding='utf-8') as f:
+        for state_record in game.collected_states:
+            frame_num = state_record['frame']
+            state = state_record['state']
+            
+            # 게임 상태에서 bbox 추출
+            objects = []
+            
+            # 플레이어 bbox
+            objects.append({
+                'class': 'player',
+                'x': state['player_x'],
+                'y': state['player_y'],
+                'w': PLAYER_SIZE,
+                'h': PLAYER_SIZE
+            })
+            
+            # 장애물 bbox
+            for obs in state['obstacles']:
+                objects.append({
+                    'class': 'obstacle',
+                    'x': obs['x'],
+                    'y': obs['y'],
+                    'w': obs['size'],
+                    'h': obs['size']
+                })
+            
+            f.write(json.dumps({'frame': frame_num, 'objects': objects}, ensure_ascii=False) + '\n')
+    
+    print(f"📊 훈련 데이터 저장:")
+    print(f"   - 디렉토리: {session_dir.name}")
+    print(f"   - State-Action 로그: {len(game.collected_states)}개")
+    print(f"   - Bbox 라벨: {len(game.collected_states)}개")
+    
+    return str(session_dir)
+
+class Game:
+    def __init__(self, sid):
+        self.sid = sid
         self.reset()
-        self.mode = "human"  # "human" or "ai"
-        self.last_update = time.time()
-        self.ai_thread = None
-        self.running = False
         
     def reset(self):
         """게임 상태 초기화"""
-        self.player_x = GAME_CONFIG['width'] // 2
-        self.player_y = GAME_CONFIG['height'] - 80
+        self.player_x = WIDTH // 2
+        self.player_y = HEIGHT // 2
         self.player_vy = 0
         self.obstacles = []
         self.score = 0
-        self.game_over = False
+        self.running = False
+        self.mode = "human"
         self.start_time = time.time()
-        self.frame_count = 0
+        self.frame = 0
+        self.game_over = False
         
-    def get_survival_time(self):
-        """생존 시간 계산"""
-        return time.time() - self.start_time
-    
-    def update_physics(self):
-        """물리 엔진 업데이트"""
+        # 훈련 데이터 수집
+        self.collected_states = []  # State-Action-Reward 로그
+        self.last_action = "stay"
+        
+    def update(self):
+        """물리 업데이트"""
         if self.game_over:
             return
-            
-        # 중력 적용
-        self.player_vy += GAME_CONFIG['gravity']
+        
+        # 📊 현재 상태 저장 (업데이트 전)
+        current_state = {
+            'player_x': self.player_x,
+            'player_y': self.player_y,
+            'player_vy': self.player_vy,
+            'obstacles': [{'x': o['x'], 'y': o['y'], 'size': o['size']} for o in self.obstacles[:5]]
+        }
+        
+        # 중력
+        self.player_vy += 1
         self.player_y += self.player_vy
         
         # 바닥 충돌
-        if self.player_y >= GAME_CONFIG['height'] - GAME_CONFIG['player_size']:
-            self.player_y = GAME_CONFIG['height'] - GAME_CONFIG['player_size']
+        if self.player_y >= HEIGHT - PLAYER_SIZE:
+            self.player_y = HEIGHT - PLAYER_SIZE
             self.player_vy = 0
         
-        # 플레이어 경계 제한
-        self.player_x = max(0, min(GAME_CONFIG['width'] - GAME_CONFIG['player_size'], self.player_x))
-    
-    def update_obstacles(self):
-        """장애물 업데이트"""
-        if self.game_over:
-            return
-            
         # 장애물 이동
-        for obstacle in self.obstacles:
-            obstacle['y'] += GAME_CONFIG['obstacle_speed']
+        for obs in self.obstacles:
+            obs['y'] += 5
         
-        # 화면 밖 장애물 제거 및 점수 업데이트
-        initial_count = len(self.obstacles)
-        self.obstacles = [obs for obs in self.obstacles if obs['y'] < GAME_CONFIG['height']]
-        self.score += initial_count - len(self.obstacles)
+        # 화면 밖 장애물 제거 + 점수 증가
+        before_count = len(self.obstacles)
+        self.obstacles = [o for o in self.obstacles if o['y'] < HEIGHT]
+        cleared = before_count - len(self.obstacles)
+        self.score += cleared
         
-        # 새 장애물 생성
-        if random.random() < 0.02:  # 2% 확률
-            new_obstacle = {
-                'x': random.randint(0, GAME_CONFIG['width'] - GAME_CONFIG['obstacle_size']),
-                'y': -GAME_CONFIG['obstacle_size'],
-                'id': str(uuid.uuid4())
-            }
-            self.obstacles.append(new_obstacle)
+        # 충돌 검사
+        self.check_collisions()
+        
+        # 📊 보상 계산
+        reward = 1.0  # 생존
+        if cleared > 0:
+            reward += cleared * 10  # 장애물 회피 보너스
+        if self.game_over:
+            reward = -100  # 충돌 페널티
+        
+        # 📊 State-Action-Reward 저장 (클로 훈련용)
+        self.collected_states.append({
+            'frame': self.frame,
+            'state': current_state,
+            'action': self.last_action,
+            'reward': reward,
+            'done': self.game_over
+        })
+        
+        # 새 장애물 생성 (5% 확률)
+        if random.random() < 0.05:
+            self.obstacles.append({
+                'x': random.randint(0, WIDTH - OBSTACLE_SIZE),
+                'y': -OBSTACLE_SIZE,
+                'size': OBSTACLE_SIZE
+            })
+        
+        self.frame += 1
     
     def check_collisions(self):
-        """충돌 검사"""
-        if self.game_over:
-            return
-            
-        player_rect = {
-            'x': self.player_x,
-            'y': self.player_y,
-            'width': GAME_CONFIG['player_size'],
-            'height': GAME_CONFIG['player_size']
-        }
-        
-        for obstacle in self.obstacles:
-            obstacle_rect = {
-                'x': obstacle['x'],
-                'y': obstacle['y'],
-                'width': GAME_CONFIG['obstacle_size'],
-                'height': GAME_CONFIG['obstacle_size']
-            }
-            
-            if self.rects_collide(player_rect, obstacle_rect):
+        """충돌 검사 (AABB)"""
+        for obs in self.obstacles:
+            # AABB (Axis-Aligned Bounding Box) 충돌 감지
+            if (self.player_x < obs['x'] + obs['size'] and
+                self.player_x + PLAYER_SIZE > obs['x'] and
+                self.player_y < obs['y'] + obs['size'] and
+                self.player_y + PLAYER_SIZE > obs['y']):
+                # 충돌!
                 self.game_over = True
-                break
+                self.running = False
+                print(f"💥 게임 오버! 점수: {self.score}, 생존 시간: {time.time() - self.start_time:.1f}초")
     
-    def rects_collide(self, rect1, rect2):
-        """사각형 충돌 검사"""
-        return (rect1['x'] < rect2['x'] + rect2['width'] and
-                rect1['x'] + rect1['width'] > rect2['x'] and
-                rect1['y'] < rect2['y'] + rect2['height'] and
-                rect1['y'] + rect1['height'] > rect2['y'])
+    def jump(self):
+        """점프"""
+        if self.player_y >= HEIGHT - PLAYER_SIZE - 5:
+            self.player_vy = -18
+        self.last_action = "jump"
     
-    def handle_action(self, action):
-        """플레이어 액션 처리"""
-        if self.game_over:
-            return
-            
-        if action == "jump" and self.player_y >= GAME_CONFIG['height'] - GAME_CONFIG['player_size'] - 5:
-            self.player_vy = GAME_CONFIG['jump_strength']
-        elif action == "left":
-            self.player_x -= GAME_CONFIG['player_speed']
-        elif action == "right":
-            self.player_x += GAME_CONFIG['player_speed']
+    def move_left(self):
+        """왼쪽 이동"""
+        self.player_x = max(0, self.player_x - 10)
+        self.last_action = "move_left"
     
-    def ai_decision(self):
-        """AI 결정 로직 (시뮬레이션)"""
-        if not self.obstacles:
-            return "stay"
-        
-        # 가장 가까운 장애물 찾기
-        visible_obstacles = [obs for obs in self.obstacles if obs['y'] > 0]
-        if not visible_obstacles:
-            return "stay"
-            
-        nearest = min(visible_obstacles, key=lambda o: o['y'])
-        
-        # 정규화된 좌표
-        player_x_norm = self.player_x / GAME_CONFIG['width']
-        obstacle_x_norm = nearest['x'] / GAME_CONFIG['width']
-        obstacle_y_norm = nearest['y'] / GAME_CONFIG['height']
-        
-        # 간단한 휴리스틱
-        if obstacle_y_norm > 0.7:  # 장애물이 화면 하단에 있을 때
-            dx = obstacle_x_norm - player_x_norm
-            
-            if abs(dx) < 0.15:  # 장애물이 가까이 있을 때
-                if dx < 0:
-                    return "right"
-                else:
-                    return "left"
-            elif obstacle_y_norm > 0.85:  # 매우 가까울 때 점프
-                return "jump"
-        
-        return "stay"
+    def move_right(self):
+        """오른쪽 이동"""
+        self.player_x = min(WIDTH - PLAYER_SIZE, self.player_x + 10)
+        self.last_action = "move_right"
     
     def get_state(self):
-        """현재 게임 상태 반환"""
+        """현재 상태"""
         return {
             'player': {
                 'x': self.player_x,
                 'y': self.player_y,
-                'vy': self.player_vy
+                'vy': self.player_vy,
+                'size': PLAYER_SIZE
             },
             'obstacles': self.obstacles,
             'score': self.score,
-            'survival_time': self.get_survival_time(),
-            'game_over': self.game_over,
+            'time': time.time() - self.start_time,
+            'frame': self.frame,
             'mode': self.mode,
-            'frame_count': self.frame_count
+            'game_over': self.game_over
         }
 
-# AI 게임 루프 (별도 스레드)
-def ai_game_loop(session_id):
-    """AI 모드 게임 루프"""
-    session = game_sessions.get(session_id)
-    if not session:
+def game_loop(sid):
+    """게임 루프"""
+    game = games.get(sid)
+    if not game:
         return
-        
-    session.running = True
     
-    while session.running and session.mode == "ai" and not session.game_over:
+    print(f"🎮 게임 루프 시작: {sid}")
+    
+    while game.running and not game.game_over:
         try:
-            # AI 결정
-            action = session.ai_decision()
+            game.update()
             
-            # 액션 적용
-            session.handle_action(action)
-            
-            # 게임 상태 업데이트
-            session.update_physics()
-            session.update_obstacles()
-            session.check_collisions()
-            session.frame_count += 1
-            
-            # 클라이언트에 상태 전송
+            # 상태 전송
             socketio.emit('game_update', {
-                'state': session.get_state(),
-                'ai_action': action
-            }, room=session_id)
+                'state': game.get_state()
+            })
             
-            # FPS 제한
-            time.sleep(1.0 / GAME_CONFIG['fps'])
+            time.sleep(1.0 / 30)  # 30 FPS
             
         except Exception as e:
-            print(f"AI 게임 루프 오류: {e}")
+            print(f"❌ 에러: {e}")
             break
     
-    session.running = False
+    # 게임 오버 처리
+    if game.game_over:
+        survival_time = time.time() - game.start_time
+        
+        # 게임 세션 저장 (팀원들의 훈련 데이터용)
+        save_gameplay_session(game)
+        
+        # 리더보드에 점수 추가
+        player_name = f"Player_{sid[:6]}"  # 임시 플레이어 이름
+        leaderboard = add_score(player_name, game.score, survival_time, game.mode, sid)
+        
+        # 클라이언트에 게임 오버 + 랭킹 전송
+        socketio.emit('game_over', {
+            'score': game.score,
+            'time': survival_time,
+            'frame': game.frame,
+            'player_name': player_name,
+            'leaderboard': leaderboard['scores'][:10]  # 상위 10개만
+        })
+        
+        print(f"💾 점수 저장: {player_name} - {game.score}점 ({survival_time:.1f}초)")
+    
+    print(f"🛑 게임 루프 종료: {sid}")
 
-# Flask 라우트
 @app.route('/')
 def index():
-    """메인 페이지"""
-    return render_template('index.html', config=GAME_CONFIG)
-
-@app.route('/api/config')
-def get_config():
-    """게임 설정 API"""
-    return jsonify(GAME_CONFIG)
+    return render_template('index.html')
 
 @app.route('/api/leaderboard')
-def get_leaderboard():
-    """리더보드 API (추후 구현)"""
-    # 실제로는 데이터베이스에서 가져올 예정
-    mock_leaderboard = [
-        {'name': 'AI Agent', 'score': 150, 'time': 45.2, 'mode': 'ai'},
-        {'name': 'Human Player', 'score': 120, 'time': 38.7, 'mode': 'human'},
-        {'name': 'Test User', 'score': 95, 'time': 32.1, 'mode': 'human'}
-    ]
-    return jsonify(mock_leaderboard)
+def api_leaderboard():
+    """리더보드 API"""
+    leaderboard = load_leaderboard()
+    return jsonify(leaderboard)
 
-# SocketIO 이벤트
-@socketio.on('connect')
-def handle_connect():
-    """클라이언트 연결"""
-    session_id = request.sid
-    game_sessions[session_id] = WebGameSession(session_id)
-    
-    emit('connected', {
-        'session_id': session_id,
-        'config': GAME_CONFIG
+@app.route('/api/leaderboard/top/<int:limit>')
+def api_leaderboard_top(limit):
+    """상위 N개 점수"""
+    leaderboard = load_leaderboard()
+    return jsonify({
+        'scores': leaderboard['scores'][:limit]
     })
+
+@app.route('/api/stats')
+def api_stats():
+    """통계 정보"""
+    leaderboard = load_leaderboard()
+    scores = leaderboard['scores']
     
-    print(f"클라이언트 연결: {session_id}")
+    if not scores:
+        return jsonify({
+            'total_games': 0,
+            'avg_score': 0,
+            'highest_score': 0,
+            'total_playtime': 0
+        })
+    
+    return jsonify({
+        'total_games': len(scores),
+        'avg_score': round(sum(s['score'] for s in scores) / len(scores), 2),
+        'highest_score': scores[0]['score'] if scores else 0,
+        'total_playtime': round(sum(s['time'] for s in scores), 2),
+        'human_games': len([s for s in scores if s['mode'] == 'human']),
+        'ai_games': len([s for s in scores if s['mode'] == 'ai'])
+    })
+
+@socketio.on('connect')
+def on_connect():
+    from flask import request
+    sid = request.sid
+    games[sid] = Game(sid)
+    print(f"✅ 연결: {sid}")
+    emit('connected', {'config': {'width': WIDTH, 'height': HEIGHT}})
 
 @socketio.on('disconnect')
-def handle_disconnect():
-    """클라이언트 연결 해제"""
-    session_id = request.sid
-    
-    if session_id in game_sessions:
-        session = game_sessions[session_id]
-        session.running = False
-        del game_sessions[session_id]
-    
-    print(f"클라이언트 연결 해제: {session_id}")
+def on_disconnect():
+    from flask import request
+    sid = request.sid
+    if sid in games:
+        games[sid].running = False
+        del games[sid]
+    print(f"❌ 연결 해제: {sid}")
 
 @socketio.on('start_game')
-def handle_start_game(data):
-    """게임 시작"""
-    session_id = request.sid
-    session = game_sessions.get(session_id)
+def on_start_game(data):
+    from flask import request
+    sid = request.sid
+    game = games.get(sid)
     
-    if session:
-        session.reset()
-        session.mode = data.get('mode', 'human')
-        
-        emit('game_started', {
-            'state': session.get_state()
-        })
-        
-        # AI 모드인 경우 AI 스레드 시작
-        if session.mode == "ai":
-            if session.ai_thread and session.ai_thread.is_alive():
-                session.running = False
-                session.ai_thread.join()
-            
-            session.ai_thread = threading.Thread(target=ai_game_loop, args=(session_id,))
-            session.ai_thread.daemon = True
-            session.ai_thread.start()
-        
-        print(f"게임 시작: {session_id}, 모드: {session.mode}")
+    if not game:
+        print(f"❌ 게임 없음: {sid}")
+        return
+    
+    # 게임 재시작: 상태 초기화
+    game.reset()
+    game.mode = data.get('mode', 'human')
+    game.running = True
+    
+    print(f"🚀 게임 시작: {sid}, 모드: {game.mode}")
+    
+    # 게임 루프 시작
+    thread = threading.Thread(target=game_loop, args=(sid,))
+    thread.daemon = True
+    thread.start()
+    
+    emit('game_started', {'state': game.get_state()})
 
 @socketio.on('player_action')
-def handle_player_action(data):
-    """플레이어 액션 처리"""
-    session_id = request.sid
-    session = game_sessions.get(session_id)
+def on_action(data):
+    from flask import request
+    sid = request.sid
+    game = games.get(sid)
     
-    if session and session.mode == "human":
-        action = data.get('action')
-        session.handle_action(action)
-        
-        # 게임 상태 업데이트 (Human 모드에서만)
-        session.update_physics()
-        session.update_obstacles()
-        session.check_collisions()
-        session.frame_count += 1
-        
-        emit('game_update', {
-            'state': session.get_state()
-        })
-
-@socketio.on('switch_mode')
-def handle_switch_mode(data):
-    """모드 전환"""
-    session_id = request.sid
-    session = game_sessions.get(session_id)
+    if not game or not game.running:
+        return
     
-    if session:
-        new_mode = data.get('mode')
-        session.mode = new_mode
-        session.running = False  # AI 스레드 중지
-        
-        if new_mode == "ai":
-            # AI 모드 시작
-            session.ai_thread = threading.Thread(target=ai_game_loop, args=(session_id,))
-            session.ai_thread.daemon = True
-            session.ai_thread.start()
-        
-        emit('mode_switched', {
-            'mode': new_mode,
-            'state': session.get_state()
-        })
-        
-        print(f"모드 전환: {session_id} -> {new_mode}")
-
-@socketio.on('get_state')
-def handle_get_state():
-    """현재 게임 상태 요청"""
-    session_id = request.sid
-    session = game_sessions.get(session_id)
+    action = data.get('action')
     
-    if session:
-        emit('game_update', {
-            'state': session.get_state()
-        })
-
-# ✨ 데이터 수집 이벤트
-@socketio.on('save_gameplay_data')
-def handle_save_gameplay_data(data):
-    """게임플레이 데이터 저장 (훈련용)"""
-    if data_collector:
-        try:
-            saved_path = data_collector.save_gameplay_session(data)
-            emit('data_saved', {
-                'success': True,
-                'message': '데이터가 저장되었습니다',
-                'path': saved_path
-            })
-            print(f"📊 게임플레이 데이터 저장 완료: {saved_path}")
-        except Exception as e:
-            print(f"❌ 데이터 저장 오류: {e}")
-            emit('data_saved', {
-                'success': False,
-                'message': str(e)
-            })
-    else:
-        emit('data_saved', {
-            'success': False,
-            'message': '데이터 수집 시스템이 비활성화되어 있습니다'
-        })
-
-# 헬스체크 (GCP Cloud Run용)
-@app.route('/health')
-def health_check():
-    """헬스체크 엔드포인트"""
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat(),
-        'active_sessions': len(game_sessions)
-    })
-
-# 📊 데이터 통계 엔드포인트
-@app.route('/api/data/stats')
-def get_data_stats():
-    """수집된 데이터 통계"""
-    if data_collector:
-        return jsonify(data_collector.get_stats())
-    return jsonify({'error': '데이터 수집 시스템 비활성화'}), 503
-
-@app.route('/api/data/export/yolo')
-def export_yolo_dataset():
-    """YOLO 데이터셋 export (제이용)"""
-    if data_collector:
-        try:
-            output_dir = "data/yolo_export"
-            data_collector.export_for_yolo(output_dir)
-            return jsonify({
-                'success': True,
-                'message': 'YOLO 데이터셋 export 완료',
-                'path': output_dir
-            })
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-    return jsonify({'error': '데이터 수집 시스템 비활성화'}), 503
-
-@app.route('/api/data/export/rl')
-def export_rl_dataset():
-    """RL 데이터셋 export (클로용)"""
-    if data_collector:
-        try:
-            output_dir = "data/rl_export"
-            data_collector.export_for_rl(output_dir)
-            return jsonify({
-                'success': True,
-                'message': 'RL 데이터셋 export 완료',
-                'path': output_dir
-            })
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-    return jsonify({'error': '데이터 수집 시스템 비활성화'}), 503
+    if action == 'jump':
+        game.jump()
+    elif action == 'left':
+        game.move_left()
+    elif action == 'right':
+        game.move_right()
 
 if __name__ == '__main__':
-    print("🌐 Distilled Vision Agent - Web Game Server")
-    print("=" * 50)
-    print("🎮 브라우저에서 접속하여 게임을 플레이하세요!")
-    print("📱 Human Mode: 직접 플레이")
-    print("🤖 AI Mode: AI 플레이 관찰")
-    print("☁️ GCP Cloud Run 배포 준비 완료")
-    print()
-    
-    # 개발 모드에서는 debug=True, 프로덕션에서는 False
-    socketio.run(app, host='0.0.0.0', port=8080, debug=True)
+    print("🎮 게임 서버 시작!")
+    print("🌐 http://localhost:5002")
+    socketio.run(app, host='0.0.0.0', port=5002, debug=True, allow_unsafe_werkzeug=True)
+

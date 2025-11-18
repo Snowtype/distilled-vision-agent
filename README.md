@@ -119,6 +119,7 @@ python app.py
 ```
 
 **Features**:
+
 - **Human Mode**: Play manually to collect expert demonstrations
 - **AI Mode**: Observe AI behavior and collect diverse gameplay
 - **Automatic Save**: Game sessions are automatically saved to `collected_data/`
@@ -129,18 +130,21 @@ python app.py
 After collecting gameplay data, export datasets for training:
 
 **For YOLO Training (Jeewon)**:
+
 ```bash
 curl -X POST http://localhost:5000/api/data/export/yolo
 # → Creates training_exports/yolo_dataset/ with images + labels
 ```
 
 **For RL Training (Chloe)**:
+
 ```bash
 curl -X POST http://localhost:5000/api/data/export/rl
 # → Creates training_exports/rl_dataset/ with observations, actions, rewards
 ```
 
 **Check Collection Stats**:
+
 ```bash
 curl http://localhost:5000/api/data/stats
 ```

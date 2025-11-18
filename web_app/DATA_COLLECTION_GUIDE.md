@@ -69,7 +69,6 @@ python app.py
 - **Human Mode**: 직접 플레이하여 전문가 데이터 수집
   - 키보드 조작: Space(점프), ←/→(이동)
   - 가능한 오래 생존
-  
 - **AI Mode**: AI의 결정을 관찰하며 데이터 수집
   - AI가 자동으로 플레이
   - 성공/실패 패턴 학습
@@ -90,6 +89,7 @@ GET /api/data/stats
 ```
 
 **응답 예시**:
+
 ```json
 {
   "total_sessions": 42,
@@ -107,18 +107,22 @@ POST /api/data/export/yolo
 ```
 
 **생성되는 파일**:
+
 - `training_exports/yolo_dataset/images/`: 프레임 이미지들
 - `training_exports/yolo_dataset/labels/`: YOLO 형식 라벨 (.txt)
 - `training_exports/yolo_dataset/dataset.yaml`: 데이터셋 설정 파일
 
 **YOLO 라벨 형식** (각 줄):
+
 ```
 <class_id> <x_center> <y_center> <width> <height>
 ```
+
 - class_id: 0=player, 1=obstacle
 - 좌표는 이미지 크기 대비 normalized (0~1)
 
 **Jeewon이 사용하는 방법**:
+
 ```python
 from ultralytics import YOLO
 
@@ -138,18 +142,21 @@ POST /api/data/export/rl
 ```
 
 **생성되는 파일**:
+
 - `training_exports/rl_dataset/observations.npy`: 상태 벡터들 (numpy array)
 - `training_exports/rl_dataset/actions.npy`: 액션들 (numpy array)
 - `training_exports/rl_dataset/rewards.npy`: 보상들 (numpy array)
 - `training_exports/rl_dataset/metadata.json`: 데이터셋 정보
 
 **데이터 구조**:
+
 - **observations**: shape (N, 8) - 각 타임스텝의 상태 벡터
   - [player_x, player_y, velocity_y, next_obstacle_x, next_obstacle_y, obstacle_width, obstacle_height, gap_size]
 - **actions**: shape (N,) - 액션 인덱스 (0=nothing, 1=jump, 2=left, 3=right)
 - **rewards**: shape (N,) - 각 타임스텝의 보상
 
 **Chloe가 사용하는 방법**:
+
 ```python
 import numpy as np
 from stable_baselines3 import PPO
@@ -261,7 +268,7 @@ def export_rl():
 ### ✅ 좋은 데이터셋을 위한 조건
 
 - [ ] **다양한 시나리오**: 다양한 장애물 패턴과 속도
-- [ ] **충분한 샘플 수**: 
+- [ ] **충분한 샘플 수**:
   - YOLO: 최소 500 프레임 (더 많을수록 좋음)
   - RL: 최소 50,000 타임스텝 (전문가 데이터)
 - [ ] **균형 잡힌 액션 분포**: jump, left, right, nothing이 모두 포함
@@ -335,19 +342,22 @@ curl -X POST http://localhost:5000/api/data/export/rl
 ## ❓ FAQ
 
 **Q: 데이터 수집은 언제 자동으로 저장되나요?**
+
 - A: 게임 종료 시 자동으로 `collected_data/`에 저장됩니다.
 
 **Q: YOLO 라벨이 없는데 어떻게 생성되나요?**
+
 - A: 현재 게임 상태(player, obstacle 위치)를 기반으로 자동 생성됩니다.
 
 **Q: RL 데이터의 reward는 어떻게 계산되나요?**
+
 - A: 생존 시간 + 장애물 통과 + 충돌 패널티로 계산됩니다.
 
 **Q: GCP에 배포된 앱에서도 데이터가 수집되나요?**
+
 - A: 네! Cloud Run에서도 동일하게 작동합니다. 단, 저장 용량 제한에 주의하세요.
 
 ---
 
 **마지막 업데이트**: 2025-11-18  
 **작성자**: Team Prof.Peter.backward()
-
