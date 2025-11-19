@@ -54,14 +54,15 @@ OBJECT_TYPES = {
     }
 }
 
-# 용암지대 설정
+# 용암지대 설정 (특정 영역만 활성화)
 LAVA_CONFIG = {
     'enabled': True,
-    'warning_duration': 2.0,  # 경고 2초
+    'warning_duration': 3.0,  # 경고 3초 (회피 시간 충분히)
     'active_duration': 3.0,   # 용암 활성 3초
-    'interval': 15.0,          # 15초마다 등장
-    'height': 100,             # 용암 높이
-    'damage_per_frame': 2      # 프레임당 데미지
+    'interval': 20.0,          # 20초마다 등장 (여유 있게)
+    'height': 120,             # 용암 높이
+    'damage_per_frame': 3,     # 프레임당 데미지
+    'zone_width': 320          # 용암 영역 너비 (WIDTH / 3)
 }
 
 # 데이터 저장 경로
@@ -225,10 +226,11 @@ class Game:
         # 이벤트 플래그
         self.star_collected = False  # 별 획득 플래그
         
-        # 용암지대 상태
+        # 용암지대 상태 (특정 영역만)
         self.lava_state = 'inactive'  # inactive, warning, active
         self.lava_timer = LAVA_CONFIG['interval']  # 다음 용암까지 시간
         self.lava_phase_timer = 0  # 현재 단계 타이머
+        self.lava_zone_x = 0  # 용암이 나올 X 위치 (0, 320, 640 중 하나)
         self.player_health = 100  # 플레이어 체력 (용암 데미지용)
         
     def update(self):
@@ -320,17 +322,19 @@ class Game:
         self.frame += 1
     
     def update_lava(self):
-        """🌋 용암지대 업데이트"""
+        """🌋 용암지대 업데이트 (특정 영역만)"""
         dt = 1.0 / 30.0  # 30 FPS 기준
         
         if self.lava_state == 'inactive':
             # 용암 대기 중
             self.lava_timer -= dt
             if self.lava_timer <= 0:
-                # 경고 단계 시작
+                # 경고 단계 시작 + 랜덤 영역 선택
                 self.lava_state = 'warning'
                 self.lava_phase_timer = LAVA_CONFIG['warning_duration']
-                print("⚠️ 용암 경고!")
+                # 좌측(0), 중앙(320), 우측(640) 중 랜덤 선택
+                self.lava_zone_x = random.choice([0, WIDTH // 3, (WIDTH // 3) * 2])
+                print(f"⚠️ 용암 경고! 영역: X={self.lava_zone_x}")
         
         elif self.lava_state == 'warning':
             # 경고 단계
@@ -345,9 +349,17 @@ class Game:
             # 용암 활성 단계
             self.lava_phase_timer -= dt
             
-            # 플레이어가 용암 지역에 있는지 검사
+            # 플레이어가 용암 영역에 있는지 검사
             lava_y_start = HEIGHT - LAVA_CONFIG['height']
-            if self.player_y + PLAYER_SIZE > lava_y_start:
+            lava_x_start = self.lava_zone_x
+            lava_x_end = self.lava_zone_x + LAVA_CONFIG['zone_width']
+            
+            # 플레이어가 용암 영역 안에 있고, Y 좌표도 용암 영역 안이면 데미지
+            player_in_zone_x = (self.player_x + PLAYER_SIZE > lava_x_start and 
+                                self.player_x < lava_x_end)
+            player_in_zone_y = self.player_y + PLAYER_SIZE > lava_y_start
+            
+            if player_in_zone_x and player_in_zone_y:
                 # 용암 데미지
                 self.player_health -= LAVA_CONFIG['damage_per_frame']
                 if self.player_health <= 0:
@@ -421,10 +433,12 @@ class Game:
             'mode': self.mode,
             'game_over': self.game_over,
             'star_collected': self.star_collected,  # 별 획득 이벤트
-            'lava': {  # 용암지대 정보
+            'lava': {  # 용암지대 정보 (특정 영역만)
                 'state': self.lava_state,
                 'timer': self.lava_phase_timer if self.lava_state != 'inactive' else self.lava_timer,
-                'height': LAVA_CONFIG['height']
+                'height': LAVA_CONFIG['height'],
+                'zone_x': self.lava_zone_x,  # 용암 영역 X 시작점
+                'zone_width': LAVA_CONFIG['zone_width']  # 용암 영역 너비
             }
         }
 
