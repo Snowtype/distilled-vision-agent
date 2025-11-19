@@ -283,7 +283,7 @@
             background: #e0e0e0;
         }
         
-        /* 모바일 가상 방향키 (768px 이하에서만 표시) */
+        /* 모바일 가상 방향키 */
         .mobile-controls {
             display: none;
             position: fixed;
@@ -295,11 +295,42 @@
             align-items: center;
         }
         
+        .mobile-controls.active {
+            display: flex !important;
+        }
+        
+        /* 가상 컨트롤 토글 버튼 */
+        .virtual-control-toggle {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            z-index: 999;
+            background: rgba(102, 126, 234, 0.95);
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 16px;
+            padding: 12px 20px;
+            color: white;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .virtual-control-toggle:hover {
+            background: rgba(118, 75, 162, 0.95);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.4);
+        }
+        
+        .virtual-control-toggle.active {
+            background: rgba(245, 87, 108, 0.95);
+        }
+        
         @media (max-width: 768px) {
-            .mobile-controls {
-                display: flex !important;
-            }
-            
             .game-wrapper {
                 grid-template-columns: 1fr;
             }
@@ -819,7 +850,13 @@
             </div>
         </div>
         
-        <!-- 모바일 가상 컨트롤 (터치 디바이스용) -->
+        <!-- 가상 컨트롤 토글 버튼 -->
+        <button class="virtual-control-toggle" id="virtualControlToggle" onclick="toggleVirtualControls()">
+            <span id="toggleIcon">🎮</span>
+            <span id="toggleText">Virtual Controls</span>
+        </button>
+        
+        <!-- 모바일 가상 컨트롤 -->
         <div class="mobile-controls" id="mobileControls">
             <button class="mobile-btn" id="mobileLeft" aria-label="Move Left">◀</button>
             <button class="mobile-btn jump" id="mobileJump" aria-label="Jump">▲</button>
@@ -1413,53 +1450,79 @@
             }
         }
         
+        // 가상 컨트롤 토글 함수
+        let virtualControlsEnabled = false;
+        
+        function toggleVirtualControls() {
+            virtualControlsEnabled = !virtualControlsEnabled;
+            const controls = document.getElementById('mobileControls');
+            const toggleBtn = document.getElementById('virtualControlToggle');
+            const toggleText = document.getElementById('toggleText');
+            
+            if (virtualControlsEnabled) {
+                controls.classList.add('active');
+                toggleBtn.classList.add('active');
+                toggleText.textContent = 'Hide Controls';
+                localStorage.setItem('virtualControls', 'enabled');
+                console.log('🎮 Virtual controls enabled');
+            } else {
+                controls.classList.remove('active');
+                toggleBtn.classList.remove('active');
+                toggleText.textContent = 'Virtual Controls';
+                localStorage.setItem('virtualControls', 'disabled');
+                console.log('🎮 Virtual controls disabled');
+            }
+        }
+        
+        // 버튼 이벤트 핸들러 (마우스 + 터치 모두 지원)
+        function setupControlButton(buttonId, action) {
+            const button = document.getElementById(buttonId);
+            if (!button) return;
+            
+            // 마우스 이벤트
+            button.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                if (window.gameClient && window.gameClient.socket) {
+                    window.gameClient.socket.emit('player_action', { action: action });
+                    console.log(`🎮 ${action} action sent (mouse)`);
+                }
+            });
+            
+            button.addEventListener('mouseup', (e) => {
+                e.preventDefault();
+            });
+            
+            // 터치 이벤트
+            button.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                if (window.gameClient && window.gameClient.socket) {
+                    window.gameClient.socket.emit('player_action', { action: action });
+                    console.log(`📱 ${action} action sent (touch)`);
+                }
+            });
+            
+            button.addEventListener('touchend', (e) => {
+                e.preventDefault();
+            });
+        }
+        
         // 게임 클라이언트 시작
         window.addEventListener('DOMContentLoaded', () => {
             console.log('🚀 Page loaded, starting game client!');
             const game = new SimpleGameClient();
             
-            // 모바일 가상 컨트롤 이벤트 (터치 디바이스용)
-            if (window.innerWidth <= 768 || 'ontouchstart' in window) {
-                const mobileControls = document.getElementById('mobileControls');
-                if (mobileControls) {
-                    mobileControls.style.display = 'flex';
-                    
-                    // 왼쪽 이동
-                    document.getElementById('mobileLeft').addEventListener('touchstart', (e) => {
-                        e.preventDefault();
-                        if (window.gameClient && window.gameClient.socket) {
-                            window.gameClient.socket.emit('player_action', { action: 'left' });
-                        }
-                    });
-                    
-                    document.getElementById('mobileLeft').addEventListener('touchend', (e) => {
-                        e.preventDefault();
-                        // 키를 떼는 이벤트는 서버에서 자동으로 처리
-                    });
-                    
-                    // 오른쪽 이동
-                    document.getElementById('mobileRight').addEventListener('touchstart', (e) => {
-                        e.preventDefault();
-                        if (window.gameClient && window.gameClient.socket) {
-                            window.gameClient.socket.emit('player_action', { action: 'right' });
-                        }
-                    });
-                    
-                    document.getElementById('mobileRight').addEventListener('touchend', (e) => {
-                        e.preventDefault();
-                    });
-                    
-                    // 점프
-                    document.getElementById('mobileJump').addEventListener('touchstart', (e) => {
-                        e.preventDefault();
-                        if (window.gameClient && window.gameClient.socket) {
-                            window.gameClient.socket.emit('player_action', { action: 'jump' });
-                        }
-                    });
-                    
-                    console.log('📱 Mobile controls enabled');
-                }
+            // 가상 컨트롤 버튼 이벤트 설정
+            setupControlButton('mobileLeft', 'left');
+            setupControlButton('mobileRight', 'right');
+            setupControlButton('mobileJump', 'jump');
+            
+            // 저장된 설정 불러오기
+            const savedSetting = localStorage.getItem('virtualControls');
+            if (savedSetting === 'enabled') {
+                toggleVirtualControls();
             }
+            
+            console.log('✅ Virtual controls initialized');
         });
     </script>
 </body>
