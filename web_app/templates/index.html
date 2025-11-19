@@ -1356,6 +1356,68 @@
                     const player = this.gameState.player;
                     this.createStarEffect(player.x + player.size / 2, player.y + player.size / 2);
                 }
+                
+                // 🌋 용암지대 렌더링
+                if (this.gameState.lava) {
+                    this.renderLava(this.gameState.lava);
+                }
+            }
+            
+            renderLava(lavaData) {
+                const ctx = this.ctx;
+                const lavaHeight = lavaData.height;
+                const lavaYStart = this.canvas.height - lavaHeight;
+                
+                // 용암 상태에 따른 렌더링
+                if (lavaData.state === 'warning') {
+                    // ⚠️ 경고 단계: 깜빡이는 빨간색 테두리
+                    const alpha = (Math.sin(Date.now() / 200) + 1) / 2;  // 0~1 사이로 깜빡임
+                    ctx.save();
+                    ctx.fillStyle = `rgba(255, 69, 0, ${alpha * 0.3})`;
+                    ctx.fillRect(0, lavaYStart, this.canvas.width, lavaHeight);
+                    
+                    // 경고 텍스트
+                    ctx.fillStyle = `rgba(255, 0, 0, ${alpha})`;
+                    ctx.font = 'bold 24px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('⚠️ LAVA WARNING ⚠️', this.canvas.width / 2, lavaYStart + 50);
+                    ctx.restore();
+                    
+                } else if (lavaData.state === 'active') {
+                    // 🌋 활성 단계: 밝은 주황색 용암
+                    ctx.save();
+                    
+                    // 용암 그라데이션
+                    const gradient = ctx.createLinearGradient(0, lavaYStart, 0, this.canvas.height);
+                    gradient.addColorStop(0, '#FF4500');
+                    gradient.addColorStop(0.5, '#FF6347');
+                    gradient.addColorStop(1, '#DC143C');
+                    ctx.fillStyle = gradient;
+                    ctx.fillRect(0, lavaYStart, this.canvas.width, lavaHeight);
+                    
+                    // 용암 효과 (파동)
+                    ctx.strokeStyle = 'rgba(255, 215, 0, 0.5)';
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    const waveOffset = (Date.now() / 10) % this.canvas.width;
+                    for (let x = -waveOffset; x < this.canvas.width + 50; x += 50) {
+                        const y = lavaYStart + Math.sin((x + waveOffset) / 20) * 10;
+                        if (x === -waveOffset) {
+                            ctx.moveTo(x, y);
+                        } else {
+                            ctx.lineTo(x, y);
+                        }
+                    }
+                    ctx.stroke();
+                    
+                    // 남은 시간 표시
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                    ctx.font = 'bold 20px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`🔥 LAVA: ${lavaData.timer.toFixed(1)}s`, this.canvas.width / 2, lavaYStart + 30);
+                    
+                    ctx.restore();
+                }
             }
             
             createStarEffect(x, y) {
@@ -1474,35 +1536,65 @@
             }
         }
         
-        // 버튼 이벤트 핸들러 (마우스 + 터치 모두 지원)
+        // 버튼 이벤트 핸들러 (마우스 + 터치 모두 지원, 길게 누르기 지원)
         function setupControlButton(buttonId, action) {
             const button = document.getElementById(buttonId);
             if (!button) return;
             
+            let pressInterval = null;
+            
+            // 누르기 시작
+            function startPress() {
+                if (window.gameClient && window.gameClient.socket) {
+                    // 즉시 한 번 전송
+                    window.gameClient.socket.emit('player_action', { action: action });
+                    
+                    // 길게 누르면 계속 전송 (100ms마다)
+                    pressInterval = setInterval(() => {
+                        if (window.gameClient && window.gameClient.socket) {
+                            window.gameClient.socket.emit('player_action', { action: action });
+                        }
+                    }, 100);
+                }
+            }
+            
+            // 누르기 종료
+            function stopPress() {
+                if (pressInterval) {
+                    clearInterval(pressInterval);
+                    pressInterval = null;
+                }
+            }
+            
             // 마우스 이벤트
             button.addEventListener('mousedown', (e) => {
                 e.preventDefault();
-                if (window.gameClient && window.gameClient.socket) {
-                    window.gameClient.socket.emit('player_action', { action: action });
-                    console.log(`🎮 ${action} action sent (mouse)`);
-                }
+                startPress();
             });
             
             button.addEventListener('mouseup', (e) => {
                 e.preventDefault();
+                stopPress();
+            });
+            
+            button.addEventListener('mouseleave', (e) => {
+                stopPress();  // 마우스가 버튼을 벗어나면 중지
             });
             
             // 터치 이벤트
             button.addEventListener('touchstart', (e) => {
                 e.preventDefault();
-                if (window.gameClient && window.gameClient.socket) {
-                    window.gameClient.socket.emit('player_action', { action: action });
-                    console.log(`📱 ${action} action sent (touch)`);
-                }
+                startPress();
             });
             
             button.addEventListener('touchend', (e) => {
                 e.preventDefault();
+                stopPress();
+            });
+            
+            button.addEventListener('touchcancel', (e) => {
+                e.preventDefault();
+                stopPress();  // 터치가 취소되면 중지
             });
         }
         

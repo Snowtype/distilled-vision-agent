@@ -36,22 +36,32 @@ try:
 except Exception as e:
     print(f"⚠️ RL 모델 로드 실패: {e}")
 
-# 객체 타입 정의
+# 객체 타입 정의 (메테오 = 떨어지는 장애물, 별 = 보상 아이템)
 OBJECT_TYPES = {
-    'meteor': {
+    'meteor': {  # 🔴 메테오 (피해야 함)
         'color': '#FF4444',
         'size': 50,
         'vy': 5,
         'score': 0,
         'reward': -100
     },
-    'star': {
+    'star': {  # ⭐ 별 (수집해야 함)
         'color': '#FFD700',
         'size': 30,
         'vy': 3,
         'score': 10,
         'reward': 20
     }
+}
+
+# 용암지대 설정
+LAVA_CONFIG = {
+    'enabled': True,
+    'warning_duration': 2.0,  # 경고 2초
+    'active_duration': 3.0,   # 용암 활성 3초
+    'interval': 15.0,          # 15초마다 등장
+    'height': 100,             # 용암 높이
+    'damage_per_frame': 2      # 프레임당 데미지
 }
 
 # 데이터 저장 경로
@@ -199,7 +209,7 @@ class Game:
         self.player_x = WIDTH // 2
         self.player_y = HEIGHT // 2
         self.player_vy = 0
-        self.obstacles = []
+        self.obstacles = []  # 메테오와 별을 포함
         self.score = 0
         self.running = False
         self.mode = "human"
@@ -214,6 +224,12 @@ class Game:
         
         # 이벤트 플래그
         self.star_collected = False  # 별 획득 플래그
+        
+        # 용암지대 상태
+        self.lava_state = 'inactive'  # inactive, warning, active
+        self.lava_timer = LAVA_CONFIG['interval']  # 다음 용암까지 시간
+        self.lava_phase_timer = 0  # 현재 단계 타이머
+        self.player_health = 100  # 플레이어 체력 (용암 데미지용)
         
     def update(self):
         """물리 업데이트"""
@@ -297,7 +313,53 @@ class Game:
                 'size': obj_config['size']
             })
         
+        # 🌋 용암지대 업데이트
+        if LAVA_CONFIG['enabled']:
+            self.update_lava()
+        
         self.frame += 1
+    
+    def update_lava(self):
+        """🌋 용암지대 업데이트"""
+        dt = 1.0 / 30.0  # 30 FPS 기준
+        
+        if self.lava_state == 'inactive':
+            # 용암 대기 중
+            self.lava_timer -= dt
+            if self.lava_timer <= 0:
+                # 경고 단계 시작
+                self.lava_state = 'warning'
+                self.lava_phase_timer = LAVA_CONFIG['warning_duration']
+                print("⚠️ 용암 경고!")
+        
+        elif self.lava_state == 'warning':
+            # 경고 단계
+            self.lava_phase_timer -= dt
+            if self.lava_phase_timer <= 0:
+                # 용암 활성화
+                self.lava_state = 'active'
+                self.lava_phase_timer = LAVA_CONFIG['active_duration']
+                print("🌋 용암 활성화!")
+        
+        elif self.lava_state == 'active':
+            # 용암 활성 단계
+            self.lava_phase_timer -= dt
+            
+            # 플레이어가 용암 지역에 있는지 검사
+            lava_y_start = HEIGHT - LAVA_CONFIG['height']
+            if self.player_y + PLAYER_SIZE > lava_y_start:
+                # 용암 데미지
+                self.player_health -= LAVA_CONFIG['damage_per_frame']
+                if self.player_health <= 0:
+                    self.game_over = True
+                    print("🔥 용암에 빠져 게임 오버!")
+            
+            if self.lava_phase_timer <= 0:
+                # 용암 비활성화, 다음 주기로
+                self.lava_state = 'inactive'
+                self.lava_timer = LAVA_CONFIG['interval']
+                self.player_health = 100  # 체력 회복
+                print("✅ 용암 종료")
     
     def check_collisions(self):
         """충돌 검사 (AABB) - 메테오 vs 별"""
@@ -349,7 +411,8 @@ class Game:
                 'x': self.player_x,
                 'y': self.player_y,
                 'vy': self.player_vy,
-                'size': PLAYER_SIZE
+                'size': PLAYER_SIZE,
+                'health': self.player_health  # 용암 데미지용 체력
             },
             'obstacles': self.obstacles,
             'score': self.score,
@@ -357,7 +420,12 @@ class Game:
             'frame': self.frame,
             'mode': self.mode,
             'game_over': self.game_over,
-            'star_collected': self.star_collected  # 별 획득 이벤트
+            'star_collected': self.star_collected,  # 별 획득 이벤트
+            'lava': {  # 용암지대 정보
+                'state': self.lava_state,
+                'timer': self.lava_phase_timer if self.lava_state != 'inactive' else self.lava_timer,
+                'height': LAVA_CONFIG['height']
+            }
         }
 
 def encode_game_state(game):
