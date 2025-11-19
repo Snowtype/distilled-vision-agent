@@ -1322,7 +1322,12 @@
                 ctx.fillStyle = gradient;
                 ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
                 
-                // 플레이어 (현대적 스타일)
+                // 🌋 용암지대 먼저 렌더링 (플레이어 아래에)
+                if (this.gameState.lava) {
+                    this.renderLava(this.gameState.lava);
+                }
+                
+                // 플레이어 (현대적 스타일) - 체력바 포함 (용암 위에)
                 try {
                     ctx.save();
                     ctx.shadowColor = 'rgba(102, 126, 234, 0.5)';
@@ -1348,6 +1353,37 @@
                         10
                     );
                     ctx.fill();
+                    
+                    // 💚 체력바 (플레이어 위에)
+                    const health = player.health || 100;
+                    const healthBarWidth = player.size;
+                    const healthBarHeight = 6;
+                    const healthBarX = player.x;
+                    const healthBarY = player.y - 12;
+                    
+                    // 체력바 배경 (검은색)
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                    ctx.fillRect(healthBarX, healthBarY, healthBarWidth, healthBarHeight);
+                    
+                    // 체력바 (초록 → 노랑 → 빨강)
+                    const healthPercent = health / 100;
+                    let healthColor;
+                    if (healthPercent > 0.6) {
+                        healthColor = '#4CAF50';  // 초록
+                    } else if (healthPercent > 0.3) {
+                        healthColor = '#FFC107';  // 노랑
+                    } else {
+                        healthColor = '#F44336';  // 빨강
+                    }
+                    
+                    ctx.fillStyle = healthColor;
+                    ctx.fillRect(healthBarX, healthBarY, healthBarWidth * healthPercent, healthBarHeight);
+                    
+                    // 체력바 테두리
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(healthBarX, healthBarY, healthBarWidth, healthBarHeight);
+                    
                     ctx.restore();
                 } catch (e) {
                     console.error('❌ 플레이어 렌더링 오류:', e, player);
@@ -1399,15 +1435,24 @@
                             ctx.fill();
                             
                         } else {
-                            // 💥 메테오: 실제 불타는 운석 + 꼬리 효과
+                            // 💥 메테오: 실제 불타는 운석 + 꼬리 효과 (낙하 방향 반영)
                             const centerX = obs.x + obs.size / 2;
                             const centerY = obs.y + obs.size / 2;
                             const radius = obs.size / 2;
                             
-                            // 🔥 불타는 꼬리 효과 (위쪽으로 떨어지는 방향)
+                            // 메테오 이동 방향 계산 (vx, vy 사용)
+                            const vx = obs.vx || 0;
+                            const vy = obs.vy || 5;
+                            
+                            // 꼬리 방향: 이동 방향의 반대
                             const tailLength = radius * 3;
+                            const tailAngle = Math.atan2(-vy, -vx);  // 반대 방향
+                            const tailEndX = centerX + Math.cos(tailAngle) * tailLength;
+                            const tailEndY = centerY + Math.sin(tailAngle) * tailLength;
+                            
+                            // 🔥 불타는 꼬리 효과 (이동 방향 반대로)
                             const tailGradient = ctx.createLinearGradient(
-                                centerX, centerY - tailLength,
+                                tailEndX, tailEndY,
                                 centerX, centerY
                             );
                             tailGradient.addColorStop(0, 'rgba(255, 69, 0, 0)');
@@ -1417,17 +1462,26 @@
                             
                             ctx.fillStyle = tailGradient;
                             ctx.beginPath();
-                            // 불꽃 꼬리 (삼각형 모양, 위쪽으로)
-                            ctx.moveTo(centerX, centerY - tailLength);
-                            ctx.lineTo(centerX - radius * 0.6, centerY - radius * 0.3);
-                            ctx.lineTo(centerX + radius * 0.6, centerY - radius * 0.3);
+                            // 불꽃 꼬리 (삼각형 모양, 이동 방향 반대로)
+                            const perpAngle = tailAngle + Math.PI / 2;
+                            ctx.moveTo(tailEndX, tailEndY);
+                            ctx.lineTo(
+                                centerX + Math.cos(perpAngle) * radius * 0.6,
+                                centerY + Math.sin(perpAngle) * radius * 0.6
+                            );
+                            ctx.lineTo(
+                                centerX - Math.cos(perpAngle) * radius * 0.6,
+                                centerY - Math.sin(perpAngle) * radius * 0.6
+                            );
                             ctx.closePath();
                             ctx.fill();
                             
-                            // 불꽃 파티클 (꼬리 주변)
+                            // 불꽃 파티클 (꼬리 주변, 이동 방향 반대로)
                             for (let i = 0; i < 5; i++) {
-                                const particleY = centerY - tailLength * 0.3 - Math.random() * tailLength * 0.5;
-                                const particleX = centerX + (Math.random() - 0.5) * radius;
+                                const particleDistance = tailLength * 0.3 + Math.random() * tailLength * 0.4;
+                                const particleAngle = tailAngle + (Math.random() - 0.5) * 0.5;
+                                const particleX = centerX + Math.cos(particleAngle) * particleDistance;
+                                const particleY = centerY + Math.sin(particleAngle) * particleDistance;
                                 const particleSize = Math.random() * 4 + 2;
                                 const alpha = Math.random() * 0.5 + 0.3;
                                 
@@ -1528,11 +1582,6 @@
                 if (this.gameState.star_collected) {
                     const player = this.gameState.player;
                     this.createStarEffect(player.x + player.size / 2, player.y + player.size / 2);
-                }
-                
-                // 🌋 용암지대 렌더링
-                if (this.gameState.lava) {
-                    this.renderLava(this.gameState.lava);
                 }
             }
             
