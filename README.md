@@ -379,6 +379,8 @@ git push origin main
 
 | 문서                                 | 설명                       | 위치             |
 | ------------------------------------ | -------------------------- | ---------------- |
+| **GIT_STATUS.md**                    | Git 브랜치 현황 & 상태     | `final_project/` |
+| **GIT_COMMANDS.md**                  | Git 명령어 완벽 가이드     | `final_project/` |
 | **TEAM_BRIEFING.md**                 | 팀 현황 & 다음 단계 브리핑 | `final_project/` |
 | **IMPLEMENTATION_ROADMAP.md**        | 상세 구현 로드맵           | `final_project/` |
 | **TEAM_INTEGRATION.md**              | 팀 통합 가이드             | `final_project/` |

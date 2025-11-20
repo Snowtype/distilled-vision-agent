@@ -12,11 +12,30 @@ TODO for Chloe:
 """
 
 import numpy as np
-import torch
-import torch.nn as nn
 from typing import Dict, List, Tuple, Optional, Any
 import time
 import random
+
+# PyTorch는 선택적 (실제 RL 모델 구현 시 필요)
+try:
+    import torch
+    import torch.nn as nn
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    print("⚠️ PyTorch (torch) 없음 - 시뮬레이션 모드만 사용 가능")
+    # 더미 클래스 (타입 힌트용)
+    class nn:
+        class Module:
+            pass
+        class Sequential:
+            pass
+        class Linear:
+            pass
+        class ReLU:
+            pass
+        class Softmax:
+            pass
 
 # TODO: Chloe가 추가할 import
 # from stable_baselines3 import PPO, DQN
@@ -31,6 +50,8 @@ class PolicyNetwork(nn.Module):
     """
     
     def __init__(self, state_dim: int = 8, hidden_dim: int = 128, action_dim: int = 4):
+        if not TORCH_AVAILABLE:
+            raise ImportError("PyTorch (torch)가 필요합니다. 실제 RL 모델 구현 시 사용됩니다.")
         super().__init__()
         
         self.network = nn.Sequential(
@@ -42,7 +63,7 @@ class PolicyNetwork(nn.Module):
             nn.Softmax(dim=-1)
         )
     
-    def forward(self, state: torch.Tensor) -> torch.Tensor:
+    def forward(self, state):
         return self.network(state)
 
 
@@ -54,6 +75,8 @@ class ValueNetwork(nn.Module):
     """
     
     def __init__(self, state_dim: int = 8, hidden_dim: int = 128):
+        if not TORCH_AVAILABLE:
+            raise ImportError("PyTorch (torch)가 필요합니다. 실제 RL 모델 구현 시 사용됩니다.")
         super().__init__()
         
         self.network = nn.Sequential(
@@ -64,7 +87,7 @@ class ValueNetwork(nn.Module):
             nn.Linear(hidden_dim, 1)
         )
     
-    def forward(self, state: torch.Tensor) -> torch.Tensor:
+    def forward(self, state):
         return self.network(state)
 
 
@@ -111,7 +134,11 @@ class AIModule:
         """
         self.model_path = model_path
         self.algorithm = algorithm
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # PyTorch가 없으면 device는 None (시뮬레이션 모드)
+        if TORCH_AVAILABLE:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = None
         
         # 모델들
         self.policy_net = None
@@ -145,8 +172,9 @@ class AIModule:
             
             print(f"🤖 [Chloe TODO] {self.algorithm} 모델 로드: {self.model_path}")
         else:
-            # 기본 정책 네트워크 (시뮬레이션용)
-            self.policy_net = PolicyNetwork().to(self.device)
+            # 기본 정책 네트워크 (시뮬레이션용) - PyTorch가 있을 때만
+            if TORCH_AVAILABLE:
+                self.policy_net = PolicyNetwork().to(self.device)
             print("⚠️ 모델 경로가 없습니다. 시뮬레이션 모드로 실행합니다.")
         
         # RL 계측 시스템 초기화
@@ -361,7 +389,7 @@ class AIModule:
             self.dqn_model.save(save_path)
         else:
             # PyTorch 모델 저장
-            if self.policy_net:
+            if TORCH_AVAILABLE and self.policy_net:
                 torch.save(self.policy_net.state_dict(), save_path)
         
         print(f"💾 모델 저장 완료: {save_path}")

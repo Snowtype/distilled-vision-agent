@@ -821,7 +821,15 @@
         
         <!-- 리더보드 (하단 전체 너비) -->
         <div class="leaderboard">
-            <h2>🏆 Leaderboard TOP 10</h2>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 style="margin: 0;">🏆 Leaderboard</h2>
+                <div style="display: flex; gap: 12px; align-items: center;">
+                    <span id="leaderboardCount" style="color: #666; font-size: 14px;">Showing 0 of 0</span>
+                    <button id="loadMoreBtn" onclick="loadMoreScores()" class="mode-btn" style="padding: 8px 16px; font-size: 14px; min-width: 120px; display: none;">
+                        <span id="loadMoreText">Show More</span>
+                    </button>
+                </div>
+            </div>
             <div id="leaderboardList" class="leaderboard-grid">
                 <p style="text-align: center; color: #999; padding: 40px; grid-column: 1 / -1;">
                     Rankings will appear here<br>once players start the game
@@ -948,28 +956,63 @@
             pendingGameMode = null;
         }
         
+        // 리더보드 전역 변수
+        let allScores = [];
+        let displayCount = 20;  // 초기 표시 개수
+        const INCREMENT = 20;   // 더보기 시 추가 개수
+        
         // 리더보드 로드
         function loadLeaderboard() {
             fetch('/api/leaderboard')
                 .then(res => res.json())
                 .then(data => {
-                    updateLeaderboard(data.scores || []);
+                    allScores = data.scores || [];
+                    displayCount = 20;  // 리셋
+                    updateLeaderboard();
                 })
                 .catch(err => {
                     console.error('리더보드 로드 실패:', err);
                 });
         }
         
+        // 더보기 버튼 클릭
+        function loadMoreScores() {
+            displayCount += INCREMENT;
+            updateLeaderboard();
+        }
+        
         // 리더보드 UI 업데이트
-        function updateLeaderboard(scores) {
+        function updateLeaderboard() {
             const container = document.getElementById('leaderboardList');
+            const countLabel = document.getElementById('leaderboardCount');
+            const loadMoreBtn = document.getElementById('loadMoreBtn');
+            const loadMoreText = document.getElementById('loadMoreText');
             
-            if (!scores || scores.length === 0) {
-                container.innerHTML = '<p style="text-align: center; color: #999; padding: 20px;">아직 기록이 없습니다</p>';
+            if (!allScores || allScores.length === 0) {
+                container.innerHTML = '<p style="text-align: center; color: #999; padding: 20px; grid-column: 1 / -1;">아직 기록이 없습니다</p>';
+                countLabel.textContent = 'Showing 0 of 0';
+                loadMoreBtn.style.display = 'none';
                 return;
             }
             
-            container.innerHTML = scores.slice(0, 10).map((entry, index) => {
+            // 표시할 개수 제한
+            const scoresToShow = allScores.slice(0, Math.min(displayCount, allScores.length));
+            const hasMore = displayCount < allScores.length;
+            
+            // 카운트 업데이트
+            countLabel.textContent = `Showing ${scoresToShow.length} of ${allScores.length}`;
+            
+            // 더보기 버튼 표시/숨김
+            if (hasMore) {
+                loadMoreBtn.style.display = 'block';
+                const remaining = allScores.length - displayCount;
+                loadMoreText.textContent = `Show ${Math.min(remaining, INCREMENT)} More`;
+            } else {
+                loadMoreBtn.style.display = 'none';
+            }
+            
+            // 리더보드 렌더링
+            container.innerHTML = scoresToShow.map((entry, index) => {
                 const rank = index + 1;
                 let rankClass = '';
                 let rankEmoji = `${rank}`;
@@ -989,6 +1032,14 @@
                 const modeLabel = entry.mode === 'human' ? 'human' : 'ai';
                 const modeText = entry.mode === 'human' ? '👤' : '🤖';
                 
+                // date 필드 사용 (timestamp 아님)
+                const dateStr = entry.date ? new Date(entry.date).toLocaleDateString('ko-KR', {
+                    month: 'short', 
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                }) : 'N/A';
+                
                 return `
                     <div class="leaderboard-item">
                         <div class="leaderboard-rank ${rankClass}">${rankEmoji}</div>
@@ -998,7 +1049,7 @@
                                 <span class="player-badge ${modeLabel}">${modeText} ${modeLabel}</span>
                             </div>
                             <div class="leaderboard-stats">
-                                ${entry.time.toFixed(1)}초 생존 • ${new Date(entry.timestamp).toLocaleDateString()}
+                                ${entry.time.toFixed(1)}초 생존 • ${dateStr}
                             </div>
                         </div>
                         <div class="leaderboard-score">${entry.score}</div>
@@ -1145,6 +1196,12 @@
                     this.gameState = data.state || data;
                     this.render();
                     this.updateUI();
+                    
+                    // 📸 프레임 캡처 (10프레임마다 = 3 FPS 샘플링)
+                    // CV 모델 훈련용 데이터 수집
+                    if (this.gameState.frame % 10 === 0) {
+                        this.captureFrame();
+                    }
                 });
                 
                 this.socket.on('game_over', (data) => {
@@ -1734,6 +1791,28 @@
                 document.getElementById('currentScore').textContent = this.gameState.score;
                 document.getElementById('currentTime').textContent = (this.gameState.time || 0).toFixed(1) + 's';
                 document.getElementById('collectedFrames').textContent = this.gameState.frame || 0;
+            }
+            
+            captureFrame() {
+                if (!this.canvas || !this.isRunning) return;
+                
+                try {
+                    // Canvas를 Base64 PNG로 인코딩
+                    const imageData = this.canvas.toDataURL('image/png', 0.8);  // 80% 품질
+                    
+                    // 서버로 전송
+                    this.socket.emit('frame_capture', {
+                        image: imageData,
+                        frame: this.gameState.frame
+                    });
+                    
+                    // 디버깅 (30프레임마다)
+                    if (this.gameState.frame % 30 === 0) {
+                        console.log(`📸 프레임 캡처: #${this.gameState.frame}`);
+                    }
+                } catch (e) {
+                    console.error('❌ 프레임 캡처 오류:', e);
+                }
             }
             
             showGameOver(data) {

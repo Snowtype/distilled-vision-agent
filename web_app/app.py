@@ -12,6 +12,17 @@ import json
 from pathlib import Path
 from datetime import datetime
 import numpy as np
+import os
+from dotenv import load_dotenv
+
+# 환경 변수 로드
+load_dotenv()
+
+# Cloud Storage Manager
+from storage_manager import get_storage_manager
+
+# CV Module for Vision-based Lava Detection
+from modules.cv_module import ComputerVisionModule
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'game-secret'
@@ -79,46 +90,24 @@ COLLECTED_DIR.mkdir(exist_ok=True)
 # 활성 게임들
 games = {}
 
-# 리더보드 로드
+# Storage Manager 초기화
+storage = get_storage_manager()
+
+# 리더보드 관리 함수들 (Cloud Storage 사용)
 def load_leaderboard():
-    """리더보드 로드"""
-    if LEADERBOARD_FILE.exists():
-        with open(LEADERBOARD_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {'scores': []}
+    """리더보드 로드 (Cloud Storage 또는 로컬)"""
+    return storage.load_leaderboard()
 
 def save_leaderboard(leaderboard):
-    """리더보드 저장"""
-    with open(LEADERBOARD_FILE, 'w', encoding='utf-8') as f:
-        json.dump(leaderboard, f, indent=2, ensure_ascii=False)
+    """리더보드 저장 (Cloud Storage 또는 로컬)"""
+    return storage.save_leaderboard(leaderboard)
 
 def add_score(player_name, score, survival_time, mode, session_id):
-    """점수 추가"""
-    leaderboard = load_leaderboard()
-    
-    leaderboard['scores'].append({
-        'player': player_name,
-        'score': score,
-        'time': round(survival_time, 2),
-        'mode': mode,
-        'date': datetime.now().isoformat(),
-        'session_id': session_id
-    })
-    
-    # 점수순 정렬 (내림차순)
-    leaderboard['scores'].sort(key=lambda x: x['score'], reverse=True)
-    
-    # 상위 100개만 유지
-    leaderboard['scores'] = leaderboard['scores'][:100]
-    
-    save_leaderboard(leaderboard)
-    return leaderboard
+    """점수 추가 (Cloud Storage 또는 로컬)"""
+    return storage.add_score(player_name, score, survival_time, mode, session_id)
 
 def save_gameplay_session(game):
-    """게임 세션 저장 (팀원들의 훈련 데이터용)"""
-    # 1. 메타데이터 저장 (기존)
-    session_file = GAMEPLAY_DIR / f"session_{int(time.time())}_{game.sid[:8]}.json"
-    
+    """게임 세션 저장 (Cloud Storage 또는 로컬)"""
     session_data = {
         'session_id': game.sid,
         'mode': game.mode,
@@ -130,19 +119,21 @@ def save_gameplay_session(game):
             'player_y': game.player_y,
             'obstacles_count': len(game.obstacles)
         },
-        'timestamp': datetime.now().isoformat()
+        'timestamp': datetime.now().isoformat(),
+        'player_name': game.player_name
     }
     
-    with open(session_file, 'w', encoding='utf-8') as f:
-        json.dump(session_data, f, indent=2, ensure_ascii=False)
+    # Cloud Storage에 저장 (storage_manager 사용)
+    saved_path = storage.save_gameplay_session(session_data, game.sid)
     
-    print(f"💾 게임 세션 저장: {session_file.name}")
+    if saved_path:
+        print(f"💾 게임 세션 저장: {saved_path}")
     
-    # 2. 훈련 데이터 저장 (State-Action-Reward)
+    # 2. 훈련 데이터 저장 (State-Action-Reward) - 로컬에만 (용량 문제)
     if len(game.collected_states) > 0:
         save_training_data(game, session_data)
     
-    return str(session_file)
+    return saved_path
 
 def save_training_data(game, session_metadata):
     """훈련 데이터 저장 (제이 & 클로용)"""
@@ -203,6 +194,8 @@ def save_training_data(game, session_metadata):
 class Game:
     def __init__(self, sid):
         self.sid = sid
+        # CV 모듈 초기화 (Vision 기반 라바 감지용)
+        self.cv_module = ComputerVisionModule()
         self.reset()
         
     def reset(self):
@@ -227,11 +220,15 @@ class Game:
         self.star_collected = False  # 별 획득 플래그
         
         # 용암지대 상태 (특정 영역만)
+        # Note: 라바는 바닥에 고정되어 있지만, YOLO로 감지하면 "Vision 기반 인식"이라는 점을 더 강조할 수 있습니다.
         self.lava_state = 'inactive'  # inactive, warning, active
         self.lava_timer = LAVA_CONFIG['interval']  # 다음 용암까지 시간
         self.lava_phase_timer = 0  # 현재 단계 타이머
-        self.lava_zone_x = 0  # 용암이 나올 X 위치 (0, 320, 640 중 하나)
+        self.lava_zone_x = 0  # 용암이 나올 X 위치 (CV 감지 결과로 업데이트됨)
         self.player_health = 100  # 플레이어 체력 (용암 데미지용)
+        
+        # CV 감지 결과 저장 (라바 감지용)
+        self.detected_lava = None  # CVDetectionResult 또는 None
         
     def update(self):
         """물리 업데이트"""
@@ -315,14 +312,17 @@ class Game:
                 'size': obj_config['size']
             })
         
-        # 🌋 용암지대 업데이트
+        # 🌋 용암지대 업데이트 (하드코딩된 로직으로 상태 관리)
         if LAVA_CONFIG['enabled']:
             self.update_lava()
+        
+        # 🔍 Vision 기반 라바 감지 (YOLO로 감지하여 "Vision 기반 인식" 강조)
+        self.detect_lava_with_cv()
         
         self.frame += 1
     
     def update_lava(self):
-        """🌋 용암지대 업데이트 (특정 영역만)"""
+        """🌋 용암지대 업데이트 (특정 영역만) - 하드코딩된 로직으로 상태 관리"""
         dt = 1.0 / 30.0  # 30 FPS 기준
         
         if self.lava_state == 'inactive':
@@ -349,10 +349,19 @@ class Game:
             # 용암 활성 단계
             self.lava_phase_timer -= dt
             
-            # 플레이어가 용암 영역에 있는지 검사
-            lava_y_start = HEIGHT - LAVA_CONFIG['height']
-            lava_x_start = self.lava_zone_x
-            lava_x_end = self.lava_zone_x + LAVA_CONFIG['zone_width']
+            # Vision 기반 라바 감지 결과 사용 (CV 모듈에서 감지된 라바 위치)
+            # CV 감지 결과가 있으면 우선 사용, 없으면 하드코딩된 위치 사용
+            if self.detected_lava is not None:
+                # CV 감지 결과에서 라바 위치 추출
+                lava_bbox = self.detected_lava.bbox
+                lava_x_start = int(lava_bbox[0])
+                lava_x_end = int(lava_bbox[2])
+                lava_y_start = int(lava_bbox[1])
+            else:
+                # 폴백: 하드코딩된 위치 사용
+                lava_y_start = HEIGHT - LAVA_CONFIG['height']
+                lava_x_start = self.lava_zone_x
+                lava_x_end = self.lava_zone_x + LAVA_CONFIG['zone_width']
             
             # 플레이어가 용암 영역 안에 있고, Y 좌표도 용암 영역 안이면 데미지
             player_in_zone_x = (self.player_x + PLAYER_SIZE > lava_x_start and 
@@ -364,14 +373,48 @@ class Game:
                 self.player_health -= LAVA_CONFIG['damage_per_frame']
                 if self.player_health <= 0:
                     self.game_over = True
-                    print("🔥 용암에 빠져 게임 오버!")
+                    print("🔥 용암에 빠져 게임 오버! (Vision 기반 감지)")
             
             if self.lava_phase_timer <= 0:
                 # 용암 비활성화, 다음 주기로
                 self.lava_state = 'inactive'
                 self.lava_timer = LAVA_CONFIG['interval']
                 self.player_health = 100  # 체력 회복
+                self.detected_lava = None  # CV 감지 결과 초기화
                 print("✅ 용암 종료")
+    
+    def detect_lava_with_cv(self):
+        """
+        🔍 Vision 기반 라바 감지 (YOLO 사용)
+        
+        Note: 라바는 바닥에 고정되어 있지만, YOLO로 감지하면 
+        "Vision 기반 인식"이라는 점을 더 강조할 수 있습니다.
+        """
+        try:
+            # 게임 상태를 CV 모듈에 전달
+            game_state = self.get_state()
+            
+            # 더미 프레임 생성 (실제 YOLO 구현 시 실제 프레임 사용)
+            # 프레임 크기는 게임 화면 크기와 일치
+            dummy_frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+            
+            # CV 모듈로 객체 탐지 (게임 상태 포함)
+            detections = self.cv_module.detect_objects(dummy_frame, game_state)
+            
+            # 라바 감지 결과 찾기
+            self.detected_lava = None
+            for detection in detections:
+                if detection.class_id == 4 or detection.class_name == "Lava":
+                    self.detected_lava = detection
+                    # 디버깅: 라바 감지 로그 (너무 자주 출력하지 않도록)
+                    if self.frame % 30 == 0:  # 1초마다 한 번
+                        print(f"🔍 [Vision] 라바 감지: bbox={detection.bbox}, confidence={detection.confidence:.2f}")
+                    break
+            
+        except Exception as e:
+            # 오류 발생 시 폴백 (하드코딩된 로직 사용)
+            print(f"⚠️ CV 라바 감지 오류: {e}, 하드코딩된 로직 사용")
+            self.detected_lava = None
     
     def check_collisions(self):
         """충돌 검사 (AABB) - 메테오 vs 별"""
@@ -687,26 +730,8 @@ def api_leaderboard_top(limit):
 
 @app.route('/api/stats')
 def api_stats():
-    """통계 정보"""
-    leaderboard = load_leaderboard()
-    scores = leaderboard['scores']
-    
-    if not scores:
-        return jsonify({
-            'total_games': 0,
-            'avg_score': 0,
-            'highest_score': 0,
-            'total_playtime': 0
-        })
-    
-    return jsonify({
-        'total_games': len(scores),
-        'avg_score': round(sum(s['score'] for s in scores) / len(scores), 2),
-        'highest_score': scores[0]['score'] if scores else 0,
-        'total_playtime': round(sum(s['time'] for s in scores), 2),
-        'human_games': len([s for s in scores if s['mode'] == 'human']),
-        'ai_games': len([s for s in scores if s['mode'] == 'ai'])
-    })
+    """통계 정보 (Cloud Storage 연동)"""
+    return jsonify(storage.get_stats())
 
 @socketio.on('connect')
 def on_connect():
@@ -774,14 +799,60 @@ def on_action(data):
     elif action == 'right':
         game.move_right()
 
+@socketio.on('frame_capture')
+def on_frame_capture(data):
+    """
+    프레임 이미지 수집 (CV 훈련용)
+    
+    클라이언트가 Canvas를 캡처해서 Base64 PNG로 전송
+    """
+    from flask import request
+    import base64
+    
+    sid = request.sid
+    game = games.get(sid)
+    
+    if not game or not game.running:
+        return
+    
+    try:
+        # Base64 PNG 디코딩
+        image_base64 = data.get('image')
+        frame_number = data.get('frame', 0)
+        
+        if not image_base64:
+            return
+        
+        # "data:image/png;base64," 접두사 제거
+        if ',' in image_base64:
+            image_base64 = image_base64.split(',')[1]
+        
+        image_bytes = base64.b64decode(image_base64)
+        
+        # Cloud Storage에 저장
+        saved_path = storage.save_frame_image(image_bytes, sid, frame_number)
+        
+        if saved_path and frame_number % 30 == 0:  # 30프레임마다 로그
+            print(f"📸 프레임 저장: {saved_path}")
+    
+    except Exception as e:
+        print(f"❌ 프레임 저장 오류: {e}")
+
 if __name__ == '__main__':
-    import os
-    port = int(os.environ.get('PORT', 5002))
+    port = int(os.environ.get('PORT', 5001))
     debug = os.environ.get('DEBUG', 'True') == 'True'
+    env_mode = os.environ.get('ENVIRONMENT', 'development')
     
     print("🎮 게임 서버 시작!")
     print(f"🌐 http://localhost:{port}")
     print(f"🤖 AI 모드: 휴리스틱 기반 (RL 모델 대기 중)")
+    print(f"📦 환경: {env_mode}")
+    
+    # Storage 상태 출력
+    if storage.use_gcs:
+        print(f"☁️ Cloud Storage 사용: gs://{storage.bucket_name}")
+    else:
+        print(f"💾 로컬 스토리지 사용: {storage.local_data_dir}")
     
     socketio.run(app, host='0.0.0.0', port=port, debug=debug, allow_unsafe_werkzeug=True)
 

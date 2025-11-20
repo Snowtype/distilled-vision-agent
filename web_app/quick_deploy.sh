@@ -36,7 +36,8 @@ gcloud run deploy $SERVICE_NAME \
     --cpu 1 \
     --concurrency 80 \
     --timeout 300 \
-    --port 5000
+    --port 5000 \
+    --set-env-vars ENVIRONMENT=production,GCS_BUCKET_NAME=distilled-vision-game-data
 
 # 5. 서비스 URL 출력
 echo

@@ -12,8 +12,15 @@ TODO for Jeewon:
 
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
-import cv2
 import time
+
+# OpenCV는 선택적 (실제 YOLO 구현 시 필요)
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+    print("⚠️ OpenCV (cv2) 없음 - 시뮬레이션 모드만 사용 가능")
 
 # TODO: Jeewon이 추가할 import
 # from ultralytics import YOLO
@@ -35,7 +42,8 @@ class CVDetectionResult:
             0: "Player",
             1: "Obstacle",
             2: "Gap",
-            3: "Item"
+            3: "Item",
+            4: "Lava"  # 라바 추가 (Vision 기반 인식 강조)
         }
         return class_names.get(class_id, "Unknown")
     
@@ -98,12 +106,13 @@ class ComputerVisionModule:
         else:
             print("⚠️ 모델 경로가 없습니다. 시뮬레이션 모드로 실행합니다.")
     
-    def detect_objects(self, frame: np.ndarray) -> List[CVDetectionResult]:
+    def detect_objects(self, frame: np.ndarray, game_state: Optional[Dict[str, Any]] = None) -> List[CVDetectionResult]:
         """
         객체 탐지 메인 함수
         
         Args:
             frame: 입력 프레임 (H, W, C)
+            game_state: 게임 상태 (시뮬레이션 모드에서 라바 감지용, 선택적)
             
         Returns:
             탐지된 객체 리스트
@@ -114,7 +123,7 @@ class ComputerVisionModule:
         
         if self.model is None:
             # 시뮬레이션 모드
-            results = self._simulate_detection(frame)
+            results = self._simulate_detection(frame, game_state)
         else:
             # 실제 YOLOv8 추론
             results = self._real_yolo_detection(frame)
@@ -126,21 +135,37 @@ class ComputerVisionModule:
         
         return results
     
-    def _simulate_detection(self, frame: np.ndarray) -> List[CVDetectionResult]:
+    def _simulate_detection(self, frame: np.ndarray, game_state: Optional[Dict[str, Any]] = None) -> List[CVDetectionResult]:
         """
         시뮬레이션된 객체 탐지 (현재 구현)
         
         Jeewon이 _real_yolo_detection()으로 교체할 예정
+        
+        Args:
+            frame: 입력 프레임 (H, W, C)
+            game_state: 게임 상태 (라바 감지용)
         """
         # 가짜 탐지 결과 생성
         results = []
         
         # 플레이어 (항상 탐지)
-        results.append(CVDetectionResult(
-            bbox=[300, 400, 340, 440],  # 중앙 하단
-            class_id=0,
-            confidence=0.95
-        ))
+        if game_state and 'player' in game_state:
+            player = game_state['player']
+            x = player.get('x', 300)
+            y = player.get('y', 400)
+            size = player.get('size', 50)
+            results.append(CVDetectionResult(
+                bbox=[x, y, x + size, y + size],
+                class_id=0,
+                confidence=0.95
+            ))
+        else:
+            # 기본값 (게임 상태 없을 때)
+            results.append(CVDetectionResult(
+                bbox=[300, 400, 340, 440],  # 중앙 하단
+                class_id=0,
+                confidence=0.95
+            ))
         
         # 장애물 (랜덤 생성)
         if np.random.random() < 0.7:  # 70% 확률
@@ -151,6 +176,43 @@ class ComputerVisionModule:
                 class_id=1,
                 confidence=np.random.uniform(0.6, 0.9)
             ))
+        
+        # 🌋 라바 감지 (Vision 기반 인식 강조)
+        # Note: 라바는 바닥에 고정되어 있지만, YOLO로 감지하면 "Vision 기반 인식"이라는 점을 더 강조할 수 있습니다.
+        if game_state and 'lava' in game_state:
+            lava_info = game_state['lava']
+            lava_state = lava_info.get('state', 'inactive')
+            
+            # warning 또는 active 상태일 때만 라바 감지
+            if lava_state in ['warning', 'active']:
+                # 프레임 크기 가져오기
+                frame_height = frame.shape[0] if len(frame.shape) >= 2 else 720
+                frame_width = frame.shape[1] if len(frame.shape) >= 2 else 960
+                
+                # 라바 위치 계산
+                lava_zone_x = lava_info.get('zone_x', 0)
+                lava_zone_width = lava_info.get('zone_width', 320)
+                lava_height = lava_info.get('height', 120)
+                lava_y_start = frame_height - lava_height
+                
+                # 라바 바운딩 박스 생성
+                # [x1, y1, x2, y2] 형식
+                lava_bbox = [
+                    lava_zone_x,                    # x1
+                    lava_y_start,                   # y1
+                    lava_zone_x + lava_zone_width,  # x2
+                    frame_height                    # y2 (바닥)
+                ]
+                
+                # 신뢰도: active 상태일 때 더 높음
+                confidence = 0.95 if lava_state == 'active' else 0.85
+                
+                results.append(CVDetectionResult(
+                    bbox=lava_bbox,
+                    class_id=4,  # Lava 클래스
+                    confidence=confidence,
+                    class_name="Lava"
+                ))
         
         return results
     
@@ -196,6 +258,12 @@ class ComputerVisionModule:
         
         TODO for Jeewon: YOLOv8 입력 형식에 맞게 구현
         """
+        if not CV2_AVAILABLE:
+            # OpenCV 없을 때는 numpy로만 처리
+            # 간단한 리사이즈 (numpy만 사용)
+            # 실제 구현 시에는 OpenCV 필요
+            raise NotImplementedError("OpenCV (cv2)가 필요합니다. 실제 YOLO 구현 시 사용됩니다.")
+        
         # 예시 구현
         # 1. 리사이즈 (640x640)
         # 2. 정규화 (0-1)
@@ -265,6 +333,10 @@ def create_detection_overlay(frame: np.ndarray, detections: List[CVDetectionResu
     
     Jeewon이 디버깅용으로 사용할 수 있는 함수
     """
+    if not CV2_AVAILABLE:
+        # OpenCV 없을 때는 원본 프레임 반환
+        return frame.copy()
+    
     overlay_frame = frame.copy()
     
     for detection in detections:
