@@ -189,6 +189,24 @@ def save_training_data(game, session_metadata):
     print(f"   - State-Action 로그: {len(game.collected_states)}개")
     print(f"   - Bbox 라벨: {len(game.collected_states)}개")
     
+    # 3. YOLO 데이터셋으로 내보내기 (추가된 기능)
+    try:
+        from yolo_exporter import YOLOExporter
+        exporter = YOLOExporter(base_dir="game_dataset")
+        
+        # 프레임이 저장된 경로 찾기
+        # storage_manager.py에 따르면: local_data_dir / 'gameplay' / 'frames' / date_folder / session_id[:8]
+        date_folder = datetime.now().strftime("%Y-%m-%d")
+        frames_dir = storage.local_data_dir / 'gameplay' / 'frames' / date_folder / game.sid[:8]
+        
+        if frames_dir.exists():
+            exporter.export_session(game.sid, game.collected_states, frames_dir)
+        else:
+            print(f"⚠️ 프레임 디렉토리를 찾을 수 없음: {frames_dir}")
+            
+    except Exception as e:
+        print(f"❌ YOLO Export 실패: {e}")
+    
     return str(session_dir)
 
 class Game:
