@@ -1,0 +1,7 @@
+names:
+- player
+- obstacle
+nc: 2
+path: /Users/jeewonkim/Desktop/2025-semi2/DeepForComputerVision/YOLO-You-Only-Live-Once/web_app/game_dataset
+train: images/train
+val: images/train
