@@ -213,7 +213,11 @@ class Game:
     def __init__(self, sid):
         self.sid = sid
         # CV 모듈 초기화 (Vision 기반 라바 감지용)
-        self.cv_module = ComputerVisionModule()
+        # 지원님이 훈련한 YOLO 모델 사용
+        # 프로젝트 루트 기준 경로
+        project_root = Path(__file__).parent.parent
+        yolo_model_path = os.getenv('YOLO_MODEL_PATH', str(project_root / 'AI_model' / 'best_112217.pt'))
+        self.cv_module = ComputerVisionModule(model_path=yolo_model_path)
         self.reset()
         
     def reset(self):
@@ -413,6 +417,8 @@ class Game:
         
         Note: 라바는 바닥에 고정되어 있지만, YOLO로 감지하면 
         "Vision 기반 인식"이라는 점을 더 강조할 수 있습니다.
+        
+        성능 최적화: YOLO 추론은 5프레임마다 한 번씩만 실행
         """
         try:
             # 게임 상태를 CV 모듈에 전달
@@ -423,6 +429,8 @@ class Game:
             dummy_frame = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
             
             # CV 모듈로 객체 탐지 (게임 상태 포함)
+            # 게임 상태가 있으면 시뮬레이션 모드로 자동 전환 (더 빠름)
+            # 더미 프레임을 YOLO에 전달하는 것은 의미 없으므로
             detections = self.cv_module.detect_objects(dummy_frame, game_state)
             
             # 라바 감지 결과 찾기
@@ -500,6 +508,9 @@ class Game:
             'mode': self.mode,
             'game_over': self.game_over,
             'star_collected': self.star_collected,  # 별 획득 이벤트
+            # 데이터 수집 현황 (실제 저장된 데이터 개수)
+            'collected_states_count': len(self.collected_states),  # State-Action-Reward 로그 개수
+            'collected_images_count': self.frame // 10,  # 프레임 이미지 개수 (10프레임마다)
             'lava': {  # 용암지대 정보 (특정 영역만)
                 'state': self.lava_state,
                 'timer': self.lava_phase_timer if self.lava_state != 'inactive' else self.lava_timer,

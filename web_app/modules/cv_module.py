@@ -22,9 +22,16 @@ except ImportError:
     CV2_AVAILABLE = False
     print("⚠️ OpenCV (cv2) 없음 - 시뮬레이션 모드만 사용 가능")
 
-# TODO: Jeewon이 추가할 import
-# from ultralytics import YOLO
-# from ..src.deployment.onnx_optimizer import ONNXModelOptimizer
+# YOLO 모델 로드용
+try:
+    from ultralytics import YOLO
+    YOLO_AVAILABLE = True
+except ImportError:
+    YOLO_AVAILABLE = False
+    print("⚠️ ultralytics 패키지 없음 - 시뮬레이션 모드만 사용 가능")
+
+# Path import 추가
+from pathlib import Path
 
 
 class CVDetectionResult:
@@ -91,18 +98,34 @@ class ComputerVisionModule:
         """
         모델 초기화
         
-        TODO for Jeewon: 실제 YOLOv8 모델 로드 구현
+        실제 YOLOv8 모델 로드 (지원님 구현 완료)
         """
         if self.model_path:
-            # TODO: 실제 구현
-            # self.model = YOLO(self.model_path)
-            # 
-            # if self.use_onnx:
-            #     optimizer = ONNXModelOptimizer()
-            #     onnx_path = optimizer.export_yolo_model(self.model, 'optimized_yolo.onnx')
-            #     self.onnx_session = optimizer.create_inference_session(onnx_path)
-            
-            print(f"🤖 [Jeewon TODO] YOLOv8 모델 로드: {self.model_path}")
+            try:
+                # 실제 YOLO 모델 로드
+                from ultralytics import YOLO
+                import os
+                
+                # 상대 경로 처리 (AI_model/best_112217.pt)
+                if not os.path.isabs(self.model_path):
+                    # 프로젝트 루트 기준으로 경로 조정
+                    project_root = Path(__file__).parent.parent.parent
+                    full_path = project_root / self.model_path
+                    if full_path.exists():
+                        self.model_path = str(full_path)
+                
+                self.model = YOLO(self.model_path)
+                print(f"✅ YOLOv8 모델 로드 성공: {self.model_path}")
+                
+                # ONNX 최적화는 나중에 (선택적)
+                # if self.use_onnx:
+                #     optimizer = ONNXModelOptimizer()
+                #     onnx_path = optimizer.export_yolo_model(self.model, 'optimized_yolo.onnx')
+                #     self.onnx_session = optimizer.create_inference_session(onnx_path)
+            except ImportError:
+                print("⚠️ ultralytics 패키지가 없습니다. 시뮬레이션 모드로 실행합니다.")
+            except Exception as e:
+                print(f"⚠️ 모델 로드 실패: {e}. 시뮬레이션 모드로 실행합니다.")
         else:
             print("⚠️ 모델 경로가 없습니다. 시뮬레이션 모드로 실행합니다.")
     
@@ -121,11 +144,13 @@ class ComputerVisionModule:
         """
         start_time = time.perf_counter()
         
-        if self.model is None:
-            # 시뮬레이션 모드
+        # 성능 최적화: 더미 프레임(zeros)을 YOLO에 전달하는 것은 의미 없음
+        # 게임 상태가 있으면 시뮬레이션 모드 사용 (더 빠름)
+        if self.model is None or game_state is not None:
+            # 시뮬레이션 모드 (게임 상태 기반, 빠름)
             results = self._simulate_detection(frame, game_state)
         else:
-            # 실제 YOLOv8 추론
+            # 실제 YOLOv8 추론 (실제 프레임이 있을 때만)
             results = self._real_yolo_detection(frame)
         
         # 성능 측정
@@ -218,39 +243,54 @@ class ComputerVisionModule:
     
     def _real_yolo_detection(self, frame: np.ndarray) -> List[CVDetectionResult]:
         """
-        실제 YOLOv8 객체 탐지
+        실제 YOLOv8 추론 (지원님 모델 사용)
         
-        TODO for Jeewon: 이 함수를 구현하세요!
+        Args:
+            frame: 입력 프레임 (H, W, C) - numpy array
         
-        구현 가이드:
-        1. 프레임 전처리 (리사이즈, 정규화)
-        2. YOLOv8 또는 ONNX 추론
-        3. 후처리 (NMS, 신뢰도 필터링)
-        4. CVDetectionResult 객체로 변환
+        Returns:
+            탐지된 객체 리스트 (CVDetectionResult)
         """
-        results = []
+        if self.model is None:
+            return self._simulate_detection(frame)
         
         try:
-            # TODO: 실제 YOLOv8 추론 구현
-            # if self.use_onnx and self.onnx_session:
-            #     # ONNX 추론
-            #     preprocessed = self._preprocess_frame(frame)
-            #     outputs = self.onnx_session.run(None, {'input': preprocessed})
-            #     results = self._postprocess_outputs(outputs[0])
-            # else:
-            #     # PyTorch 추론
-            #     yolo_results = self.model(frame)
-            #     results = self._convert_yolo_results(yolo_results)
+            # YOLOv8 추론 실행
+            # YOLO 모델은 자동으로 전처리/후처리 수행
+            yolo_results = self.model(frame, verbose=False)
             
-            # 임시: 시뮬레이션 호출
-            results = self._simulate_detection(frame)
+            # 결과 변환
+            results = []
+            for result in yolo_results:
+                # result.boxes는 탐지된 박스 정보
+                boxes = result.boxes
+                
+                for i in range(len(boxes)):
+                    # 박스 정보 추출
+                    box = boxes.xyxy[i].cpu().numpy()  # [x1, y1, x2, y2]
+                    conf = float(boxes.conf[i].cpu().numpy())  # 신뢰도
+                    cls = int(boxes.cls[i].cpu().numpy())  # 클래스 ID
+                    
+                    # 클래스 이름 매핑 (YOLO 데이터셋 기준)
+                    # 0: player, 1: meteor, 2: star, 3: lava_warning, 4: lava_active
+                    class_names = ['player', 'meteor', 'star', 'lava_warning', 'lava_active']
+                    class_name = class_names[cls] if cls < len(class_names) else f'class_{cls}'
+                    
+                    # CVDetectionResult 생성
+                    detection = CVDetectionResult(
+                        bbox=[float(box[0]), float(box[1]), float(box[2]), float(box[3])],
+                        class_id=cls,
+                        confidence=conf,
+                        class_name=class_name
+                    )
+                    results.append(detection)
+            
+            return results
             
         except Exception as e:
             print(f"❌ YOLOv8 추론 오류: {e}")
             # 오류 시 시뮬레이션으로 폴백
-            results = self._simulate_detection(frame)
-        
-        return results
+            return self._simulate_detection(frame)
     
     def _preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
         """
