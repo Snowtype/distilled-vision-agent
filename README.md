@@ -34,21 +34,7 @@ RGB 프레임 → YOLO 탐지 → MLP 정책 네트워크 → 액션 결정
 
 **담당 영역**: 웹 플랫폼, 데이터 파이프라인, GCP 배포
 
-**완료된 작업**:
-
-- ✅ 웹 게임 플랫폼 (Flask + SocketIO)
-- ✅ GCP Cloud Run 배포
-- ✅ 데이터 수집 파이프라인 (State-Action-Reward, Bounding Boxes)
-- ✅ YOLO 데이터셋 자동 Export (`yolo_exporter.py`)
-- ✅ 데이터 증강 시스템 (`src/data/augmentation.py`)
-- ✅ ONNX 최적화 도구 (`src/deployment/onnx_optimizer.py`)
-
-**담당 파일**:
-
-- `web_app/app.py` - 메인 Flask 서버
-- `web_app/yolo_exporter.py` - YOLO 데이터셋 Export
-- `src/data/augmentation.py` - 데이터 증강
-- `src/deployment/onnx_optimizer.py` - 모델 최적화
+**완료된 작업**: 웹 게임 플랫폼, GCP 배포, 데이터 수집 파이프라인, YOLO 데이터셋 Export
 
 ---
 
@@ -56,38 +42,15 @@ RGB 프레임 → YOLO 탐지 → MLP 정책 네트워크 → 액션 결정
 
 **담당 영역**: 컴퓨터 비전, YOLOv8 모델 훈련 및 분석
 
-**현재 상태**:
+**현재 상태**: YOLOv8-nano 모델 훈련 완료, 데이터셋 생성 완료 (483 train, 81 val)
 
-- ✅ YOLOv8-nano 모델 훈련 완료 (`YOLO_demo/YOLO-dataset-11221748/best.pt`)
-- ✅ YOLO 데이터셋 생성 완료 (`web_app/game_dataset/` - 483 train, 81 val)
-- 🚧 웹 앱 통합 및 실시간 추론 구현 필요
-- 🚧 모델 성능 분석 및 최적화 필요
+**추가 작업 (선택사항)**:
 
-**해야 할 일**:
+- 모델 성능 분석 (클래스별 mAP, 오류 분석)
+- 모델 비교 실험 (YOLO 버전, 해상도 비교)
+- 모델 해석성 분석 (Grad-CAM, Attention 시각화)
 
-1. **모델 성능 분석** (우선순위: 🟡 High)
-
-   - [ ] 클래스별 성능 분석 (mAP, Precision, Recall)
-   - [ ] 오류 분석 (False Positive/Negative)
-   - [ ] IoU 분포 분석
-   - [ ] 실패 케이스 분석
-
-2. **모델 비교 실험** (우선순위: 🟡 High)
-
-   - [ ] YOLO 버전 비교 (nano, small, medium)
-   - [ ] 해상도 비교 실험 (320, 416, 640, 832)
-   - [ ] 하이퍼파라미터 튜닝
-   - [ ] 속도/정확도 트레이드오프 분석
-
-3. **모델 해석성 분석** (우선순위: 🟢 Medium)
-   - [ ] Grad-CAM 시각화
-   - [ ] Attention map 생성
-   - [ ] 모델이 어디를 보고 있는지 분석
-
-**작업 폴더**:
-
-- `YOLO_demo/YOLO-dataset-11221748/` - YOLO 훈련 및 테스트
-- `web_app/game_dataset/` - YOLO 데이터셋 (이미지 + 라벨)
+**작업 폴더**: `YOLO_demo/YOLO-dataset-11221748/`, `web_app/game_dataset/`
 
 ---
 
@@ -95,50 +58,70 @@ RGB 프레임 → YOLO 탐지 → MLP 정책 네트워크 → 액션 결정
 
 **담당 영역**: PPO/DQN 기반 RL 에이전트 훈련
 
-**현재 상태**:
+**현재 상태**: 데이터 수집 완료 (23+ 세션), RL 데이터 형식 준비 완료
 
-- ✅ 데이터 수집 완료 (`web_app/collected_gameplay/` - 23+ 세션)
-- ✅ RL 데이터 형식 준비 완료 (`states_actions.jsonl`)
-- ❌ RL 모델 훈련 미시작
+**작업 내용** (필요한 정도로 진행):
 
-**해야 할 일**:
+- 데이터 로더 구현 (`states_actions.jsonl` 읽기 및 파싱)
+- Policy Distillation (전문가 시연 데이터로 초기 정책 훈련)
+- PPO/DQN 훈련 (State-based 정책, Self-Play 환경)
+- Vision-based RL (선택사항)
 
-1. **데이터 로더 구현** (우선순위: 🔴 Critical)
+**작업 디렉토리 및 Import 방법**:
 
-   - [ ] `src/training/data_loader.py` - RL 데이터 로더 구현
-   - [ ] `states_actions.jsonl` 읽기 및 파싱
-   - [ ] Replay Buffer 구현
-   - [ ] 데이터 전처리 파이프라인
+**옵션 1: 기존 `src/` 폴더 구조 사용 (권장)**
 
-2. **Policy Distillation (Imitation Learning)** (우선순위: 🔴 Critical)
+```
+src/
+├── models/
+│   └── policy_network.py          # 정책 네트워크 정의
+└── training/
+    ├── data_loader.py             # RL 데이터 로더
+    └── ppo_trainer.py             # PPO/DQN 훈련 스크립트
+```
 
-   - [ ] 전문가 시연 데이터 로드 (Human Mode 데이터)
-   - [ ] MLP 정책 네트워크 아키텍처 설계
-   - [ ] Supervised Learning으로 초기 정책 훈련
-   - [ ] 목표: ≥75% action agreement
+**Import 예시**:
+```python
+# src/models/policy_network.py에서
+from torch import nn
+# PolicyNetwork 클래스 정의
 
-3. **PPO/DQN 훈련** (우선순위: 🔴 Critical)
+# src/training/ppo_trainer.py에서
+from src.models.policy_network import PolicyNetwork
+from src.utils.rl_instrumentation import RLInstrumentationLogger
 
-   - [ ] `src/training/ppo_trainer.py` - PPO/DQN 훈련 구현
-   - [ ] `src/models/policy_network.py` - 정책 네트워크 아키텍처
-   - [ ] State-based 정책 먼저 구현
-   - [ ] Self-Play 환경 구축
-   - [ ] 목표: ≥20% 생존 시간 향상
+# web_app/modules/ai_module.py에서
+from src.models.policy_network import PolicyNetwork
+from src.training.ppo_trainer import PPOTrainer
+```
 
-4. **Vision-based RL** (선택, 우선순위: 🟢 Medium)
-   - [ ] YOLO 출력 → RL 입력 변환
-   - [ ] End-to-End Vision-based 정책
+**옵션 2: 최상단에 새 폴더 생성**
 
-**작업 폴더**:
+```
+RL_training/                       # 최상단에 새 폴더
+├── models/
+│   └── policy_network.py
+├── training/
+│   ├── data_loader.py
+│   └── ppo_trainer.py
+└── __init__.py
+```
 
+**Import 예시**:
+```python
+# 프로젝트 루트에서 실행 시
+import sys
+sys.path.append('.')
+from RL_training.models.policy_network import PolicyNetwork
+from RL_training.training.ppo_trainer import PPOTrainer
+```
+
+**데이터 위치**:
 - `web_app/collected_gameplay/session_*/states_actions.jsonl` - RL 훈련 데이터
-- `src/training/ppo_trainer.py` - PPO/DQN 훈련 스크립트
-- `src/models/policy_network.py` - 정책 네트워크
 
 **참고 문서**:
-
 - `Legacy/Larry/RL_TRAINING_GUIDE.md` - RL 훈련 상세 가이드
-- `web_app/TEAM_GUIDE.md` - 모듈 통합 가이드
+- `web_app/modules/ai_module.py` - 통합 모듈 (PolicyNetwork 클래스 이미 정의됨)
 
 ---
 
@@ -221,9 +204,9 @@ python src/training/ppo_trainer.py
 
 | 기준                      | 목표                  | 담당자 | 현재 상태         | 중요도      |
 | ------------------------- | --------------------- | ------ | ----------------- | ----------- |
-| **Detection Quality**     | mAP ≥ 70%             | Jeewon | ✅ 모델 훈련 완료 | 🔴 Critical |
-| **Imitation Accuracy**    | ≥75% action agreement | Chloe  | ❌ 미시작         | 🔴 Critical |
-| **Performance Gain**      | ≥20% survival time ↑  | Chloe  | ❌ 미시작         | 🔴 Critical |
+| **Detection Quality**     | mAP ≥ 70%             | Jeewon | ✅ 모델 훈련 완료 | 🟡 High     |
+| **Imitation Accuracy**    | ≥75% action agreement | Chloe  | ❌ 미시작         | 🟡 High     |
+| **Performance Gain**      | ≥20% survival time ↑  | Chloe  | ❌ 미시작         | 🟡 High     |
 | **Real-time Performance** | ≥60 FPS inference     | All    | ⚠️ 30 FPS (웹)    | 🟡 High     |
 | **Data Collection**       | ≥5,000 frames         | Minsuk | ✅ 500+ frames    | ✅ 완료     |
 
@@ -245,6 +228,7 @@ python src/training/ppo_trainer.py
 **목적**: 더 이상 사용하지 않는 파일들을 팀원별로 정리하는 폴더
 
 **구조**:
+
 ```
 Legacy/
 ├── Larry/    # Minsuk의 레거시 파일 (문서, 구버전 스크립트 등)
@@ -253,6 +237,7 @@ Legacy/
 ```
 
 **사용 방법**:
+
 - 더 이상 사용하지 않는 파일이나 구버전 파일을 본인 폴더로 이동
 - 예: `Legacy/Jeewon/old_yolo_script.py`, `Legacy/Chloe/experiment_notebook.ipynb`
 - Git에 포함되어 팀원들과 공유 가능
