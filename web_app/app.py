@@ -108,7 +108,7 @@ def load_ppo_for_web(model_path: str) -> PPOAgent:
 
 @app.route("/")
 def index():
-    """http://localhost:5000/ → index.html"""
+    """http://localhost:5001/ → index.html"""
     return send_from_directory(BASE_DIR, "index.html")
 
 
@@ -568,4 +568,5 @@ if __name__ == "__main__":
     ppo_agent = load_ppo_for_web(PPO_MODEL_PATH)
 
     # Flask+SocketIO 서버 실행
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True)
+    # 포트 5001 사용 (macOS ControlCenter가 5000 사용 중)
+    socketio.run(app, host="0.0.0.0", port=5001, debug=True)
