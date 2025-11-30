@@ -4,473 +4,498 @@ AI Module - Reinforcement Learning Policy
 Chloe Lee (cl4490) 담당 모듈
 PPO/DQN 기반 게임 AI 정책
 
-TODO for Chloe:
-1. simulate_ai_decision() → real_ppo_decision() 교체
-2. 정책 네트워크 훈련 및 로드
-3. 실시간 의사결정 최적화
-4. 자가 학습 (Self-Play) 구현
+난이도 레벨 시스템:
+- Level 1 (Easy): 간단한 휴리스틱 (기본 회피만)
+- Level 2 (Medium): PPO 모델 기반 (Vision → State → Policy)
+- Level 3 (Hard): 고급 휴리스틱 + PPO 앙상블
+- Level 4 (Expert): 풀 앙상블 (PPO + DQN + 휴리스틱)
+
+수정: 2025-11-29
+- Level 2에 실제 PPO 모델 통합
+- state_encoder.py 사용
 """
 
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 import time
 import random
+from pathlib import Path
 
-# PyTorch는 선택적 (실제 RL 모델 구현 시 필요)
+# PyTorch
 try:
     import torch
     import torch.nn as nn
+    import torch.nn.functional as F
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
-    print("⚠️ PyTorch (torch) 없음 - 시뮬레이션 모드만 사용 가능")
-    # 더미 클래스 (타입 힌트용)
-    class nn:
-        class Module:
-            pass
-        class Sequential:
-            pass
-        class Linear:
-            pass
-        class ReLU:
-            pass
-        class Softmax:
-            pass
+    print("⚠️ PyTorch 없음 - 휴리스틱 모드만 사용 가능")
 
-# TODO: Chloe가 추가할 import
-# from stable_baselines3 import PPO, DQN
-# from ..src.utils.rl_instrumentation import RLInstrumentationLogger
+# State Encoder (우리가 만든 모듈)
+try:
+    from .state_encoder import encode_state, game_state_to_detections, STATE_DIM, ACTION_LIST
+except ImportError:
+    try:
+        from state_encoder import encode_state, game_state_to_detections, STATE_DIM, ACTION_LIST
+    except ImportError:
+        print("⚠️ state_encoder.py 없음 - 휴리스틱 모드만 사용 가능")
+        STATE_DIM = 26
+        ACTION_LIST = ["stay", "left", "right", "jump"]
+        encode_state = None
+        game_state_to_detections = None
 
+
+# ============================================================================
+# Policy Network (PPO용)
+# ============================================================================
 
 class PolicyNetwork(nn.Module):
     """
-    정책 네트워크 (MLP)
+    Actor Network: State → Action Probabilities
     
-    Chloe가 구현할 신경망 구조
+    Architecture: 26 → 256 → 256 → 128 → 4
     """
     
-    def __init__(self, state_dim: int = 8, hidden_dim: int = 128, action_dim: int = 4):
-        if not TORCH_AVAILABLE:
-            raise ImportError("PyTorch (torch)가 필요합니다. 실제 RL 모델 구현 시 사용됩니다.")
-        super().__init__()
+    def __init__(self, state_dim=26, action_dim=4, hidden_dim=256):
+        super(PolicyNetwork, self).__init__()
+        self.fc1 = nn.Linear(state_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, hidden_dim // 2)
+        self.fc4 = nn.Linear(hidden_dim // 2, action_dim)
         
-        self.network = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim),
-            nn.Softmax(dim=-1)
-        )
-    
-    def forward(self, state):
-        return self.network(state)
+        # Xavier 초기화
+        nn.init.xavier_uniform_(self.fc1.weight)
+        nn.init.xavier_uniform_(self.fc2.weight)
+        nn.init.xavier_uniform_(self.fc3.weight)
+        nn.init.xavier_uniform_(self.fc4.weight)
+        
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = F.relu(self.fc3(x))
+        x = self.fc4(x)
+        return F.softmax(x, dim=-1)
 
 
 class ValueNetwork(nn.Module):
     """
-    가치 네트워크 (PPO용)
-    
-    Chloe가 PPO 구현 시 사용
+    Critic Network: State → Value Estimate
     """
     
-    def __init__(self, state_dim: int = 8, hidden_dim: int = 128):
-        if not TORCH_AVAILABLE:
-            raise ImportError("PyTorch (torch)가 필요합니다. 실제 RL 모델 구현 시 사용됩니다.")
-        super().__init__()
+    def __init__(self, state_dim=26, hidden_dim=256):
+        super(ValueNetwork, self).__init__()
+        self.fc1 = nn.Linear(state_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, hidden_dim // 2)
+        self.fc4 = nn.Linear(hidden_dim // 2, 1)
         
-        self.network = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
-    
-    def forward(self, state):
-        return self.network(state)
+    def forward(self, x):
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = F.relu(self.fc3(x))
+        return self.fc4(x)
 
+
+# ============================================================================
+# AI Strategy Classes
+# ============================================================================
+
+class AIStrategy:
+    """AI 전략 베이스 클래스"""
+    
+    def __init__(self, level: int, name: str):
+        self.level = level
+        self.name = name
+    
+    def make_decision(self, game_state: Dict[str, Any]) -> Optional[str]:
+        raise NotImplementedError
+
+
+class Level1Strategy(AIStrategy):
+    """
+    Level 1 (Easy) - 간단한 휴리스틱
+    
+    전략:
+    - 기본적인 메테오 회피만
+    - 별은 무시
+    """
+    
+    def __init__(self):
+        super().__init__(level=1, name="Easy")
+        self.DETECTION_RANGE = 200
+        self.DANGER_RANGE = 100
+    
+    def make_decision(self, game_state: Dict[str, Any]) -> Optional[str]:
+        player = game_state.get('player', {})
+        obstacles = game_state.get('obstacles', [])
+        
+        player_x = player.get('x', 480)
+        player_y = player.get('y', 360)
+        player_size = player.get('size', 50)
+        player_center_x = player_x + player_size / 2
+        
+        # 가장 가까운 메테오 찾기
+        nearest_meteor = None
+        nearest_dist = float('inf')
+        
+        for obs in obstacles:
+            if obs.get('type') != 'meteor':
+                continue
+            
+            obs_x = obs.get('x', 0)
+            obs_y = obs.get('y', 0)
+            obs_size = obs.get('size', 50)
+            obs_center_x = obs_x + obs_size / 2
+            
+            if obs_y < player_y:
+                x_overlap = abs(player_center_x - obs_center_x) < self.DETECTION_RANGE
+                if x_overlap:
+                    dist = abs(player_center_x - obs_center_x) + (player_y - obs_y) * 0.5
+                    if dist < nearest_dist:
+                        nearest_dist = dist
+                        nearest_meteor = obs
+        
+        # 메테오 회피
+        if nearest_meteor and nearest_dist < self.DANGER_RANGE:
+            meteor_center_x = nearest_meteor['x'] + nearest_meteor.get('size', 50) / 2
+            if meteor_center_x < player_center_x:
+                return 'right'
+            else:
+                return 'left'
+        
+        return None
+
+
+class Level2Strategy(AIStrategy):
+    """
+    Level 2 (Medium) - PPO 모델 기반
+    
+    전략:
+    - 학습된 PPO 모델 사용
+    - state_encoder로 게임 상태 → 26-dim 벡터 변환
+    - 모델 없으면 휴리스틱 폴백
+    """
+    
+    def __init__(self, model_path: Optional[str] = None):
+        super().__init__(level=2, name="Medium (PPO)")
+        self.model_path = model_path
+        self.policy_net = None
+        self.device = None
+        self.fallback_strategy = Level1Strategy()
+        
+        # PPO 모델 로드
+        self._load_ppo_model()
+    
+    def _load_ppo_model(self):
+        """PPO 모델 로드"""
+        if not TORCH_AVAILABLE:
+            print("⚠️ Level 2: PyTorch 없음, 휴리스틱으로 폴백")
+            return
+        
+        if not self.model_path:
+            print("⚠️ Level 2: 모델 경로 없음, 휴리스틱으로 폴백")
+            return
+        
+        try:
+            model_file = Path(self.model_path)
+            if not model_file.exists():
+                print(f"⚠️ Level 2: 모델 파일 없음 ({self.model_path})")
+                return
+            
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            
+            # Checkpoint 로드
+            checkpoint = torch.load(self.model_path, map_location=self.device)
+            
+            # State/Action 차원 확인
+            state_dim = checkpoint.get('state_dim', STATE_DIM)
+            action_dim = checkpoint.get('action_dim', len(ACTION_LIST))
+            
+            # Policy Network 생성 및 가중치 로드
+            self.policy_net = PolicyNetwork(state_dim, action_dim).to(self.device)
+            
+            if 'policy_state_dict' in checkpoint:
+                self.policy_net.load_state_dict(checkpoint['policy_state_dict'])
+            elif 'policy' in checkpoint:
+                self.policy_net.load_state_dict(checkpoint['policy'])
+            else:
+                # 직접 state_dict인 경우
+                self.policy_net.load_state_dict(checkpoint)
+            
+            self.policy_net.eval()
+            print(f"✅ Level 2: PPO 모델 로드 성공 ({self.model_path})")
+            print(f"   State dim: {state_dim}, Action dim: {action_dim}")
+            
+        except Exception as e:
+            print(f"⚠️ Level 2: PPO 모델 로드 실패 ({e})")
+            self.policy_net = None
+    
+    def make_decision(self, game_state: Dict[str, Any]) -> Optional[str]:
+        """PPO 모델 기반 의사결정"""
+        # PPO 모델이 있으면 사용
+        if self.policy_net is not None and encode_state is not None:
+            try:
+                return self._ppo_decision(game_state)
+            except Exception as e:
+                print(f"⚠️ Level 2: PPO 추론 오류 ({e})")
+        
+        # 폴백: Level 1 전략 사용
+        return self.fallback_strategy.make_decision(game_state)
+    
+    def _ppo_decision(self, game_state: Dict[str, Any]) -> Optional[str]:
+        """
+        PPO 모델 기반 의사결정
+        
+        1. game_state → detections 변환
+        2. detections → 26-dim state vector
+        3. PPO 추론 → action probabilities
+        4. argmax → action
+        """
+        # Step 1: game_state → detections 변환
+        detections = game_state_to_detections(game_state)
+        
+        # Step 2: encode_state()로 26-dim 벡터 생성
+        state_vec = encode_state(detections, game_state)
+        
+        # Step 3: PPO 추론
+        with torch.no_grad():
+            state_tensor = torch.FloatTensor(state_vec).unsqueeze(0).to(self.device)
+            action_probs = self.policy_net(state_tensor)
+            action_idx = torch.argmax(action_probs, dim=-1).item()
+        
+        # Step 4: action index → action string
+        action = ACTION_LIST[action_idx]
+        
+        # 'stay'는 None으로 반환 (app.py 호환)
+        if action == 'stay':
+            return None
+        
+        return action
+
+
+class Level3Strategy(AIStrategy):
+    """
+    Level 3 (Hard) - 고급 휴리스틱 + PPO
+    
+    전략:
+    - PPO 모델 + 휴리스틱 보완
+    - 용암 회피 로직 추가
+    - 별 수집 전략
+    """
+    
+    def __init__(self, model_path: Optional[str] = None):
+        super().__init__(level=3, name="Hard")
+        self.ppo_strategy = Level2Strategy(model_path=model_path)
+        self.METEOR_DANGER_RANGE = 150
+        self.STAR_COLLECT_RANGE = 200
+        self.EMERGENCY_RANGE = 80
+    
+    def make_decision(self, game_state: Dict[str, Any]) -> Optional[str]:
+        """PPO + 휴리스틱 앙상블"""
+        player = game_state.get('player', {})
+        obstacles = game_state.get('obstacles', [])
+        lava = game_state.get('lava', {})
+        
+        player_x = player.get('x', 480)
+        player_y = player.get('y', 360)
+        player_size = player.get('size', 50)
+        player_center_x = player_x + player_size / 2
+        
+        WIDTH = 960
+        HEIGHT = 720
+        
+        # 긴급 상황 체크: 메테오가 매우 가까움
+        for obs in obstacles:
+            if obs.get('type') != 'meteor':
+                continue
+            obs_x = obs.get('x', 0)
+            obs_y = obs.get('y', 0)
+            obs_size = obs.get('size', 50)
+            obs_center_x = obs_x + obs_size / 2
+            
+            dist = np.sqrt((player_center_x - obs_center_x)**2 + (player_y - obs_y)**2)
+            if dist < self.EMERGENCY_RANGE and obs_y < player_y:
+                # 긴급 회피
+                if player_y >= HEIGHT - player_size - 10:
+                    return 'jump'
+        
+        # 용암 회피 (최우선)
+        if lava.get('state') == 'active':
+            lava_zone_x = lava.get('zone_x', 0)
+            lava_zone_width = lava.get('zone_width', 320)
+            lava_zone_end = lava_zone_x + lava_zone_width
+            
+            if player_x + player_size > lava_zone_x and player_x < lava_zone_end:
+                if player_center_x < WIDTH / 2:
+                    return 'left'
+                else:
+                    return 'right'
+        
+        # PPO 모델 의사결정
+        ppo_action = self.ppo_strategy.make_decision(game_state)
+        if ppo_action:
+            return ppo_action
+        
+        # 용암 경고 회피
+        if lava.get('state') == 'warning':
+            lava_zone_x = lava.get('zone_x', 0)
+            lava_zone_width = lava.get('zone_width', 320)
+            lava_zone_end = lava_zone_x + lava_zone_width
+            
+            if player_x + player_size > lava_zone_x - 50 and player_x < lava_zone_end + 50:
+                if player_center_x < WIDTH / 2:
+                    return 'left'
+                else:
+                    return 'right'
+        
+        return None
+
+
+class Level4Strategy(AIStrategy):
+    """
+    Level 4 (Expert) - 풀 앙상블
+    
+    전략:
+    - PPO + 휴리스틱 + 용암/별 전략
+    - 모든 요소 고려
+    """
+    
+    def __init__(self, ppo_model_path: Optional[str] = None, dqn_model_path: Optional[str] = None):
+        super().__init__(level=4, name="Expert")
+        self.level3_strategy = Level3Strategy(model_path=ppo_model_path)
+    
+    def make_decision(self, game_state: Dict[str, Any]) -> Optional[str]:
+        """Level 3 전략 + 추가 최적화"""
+        return self.level3_strategy.make_decision(game_state)
+
+
+# ============================================================================
+# AI Level Manager
+# ============================================================================
+
+class AILevelManager:
+    """AI 난이도 레벨 관리자"""
+    
+    def __init__(self, ppo_model_path: Optional[str] = None, dqn_model_path: Optional[str] = None):
+        """
+        초기화
+        
+        Args:
+            ppo_model_path: PPO 모델 경로 (Level 2, 3, 4에서 사용)
+            dqn_model_path: DQN 모델 경로 (선택적)
+        """
+        self.ppo_model_path = ppo_model_path
+        self.dqn_model_path = dqn_model_path
+        
+        self.strategies = {
+            1: Level1Strategy(),
+            2: Level2Strategy(model_path=ppo_model_path),
+            3: Level3Strategy(model_path=ppo_model_path),
+            4: Level4Strategy(ppo_model_path=ppo_model_path, dqn_model_path=dqn_model_path)
+        }
+        self.current_level = 2  # 기본값: Level 2 (PPO)
+        
+        print(f"🤖 AI Level Manager 초기화")
+        print(f"   - Level 1: Easy (휴리스틱)")
+        print(f"   - Level 2: Medium (PPO)")
+        print(f"   - Level 3: Hard (PPO + 휴리스틱)")
+        print(f"   - Level 4: Expert (앙상블)")
+    
+    def set_level(self, level: int):
+        """난이도 레벨 설정"""
+        if level not in self.strategies:
+            print(f"⚠️ Invalid level: {level}. Using default (2).")
+            level = 2
+        self.current_level = level
+    
+    def make_decision(self, game_state: Dict[str, Any]) -> Optional[str]:
+        """현재 레벨의 전략으로 의사결정"""
+        strategy = self.strategies[self.current_level]
+        return strategy.make_decision(game_state)
+    
+    def get_level_info(self) -> Dict[str, Any]:
+        """현재 레벨 정보 반환"""
+        strategy = self.strategies[self.current_level]
+        return {
+            'level': self.current_level,
+            'name': strategy.name,
+            'description': f"Level {self.current_level}: {strategy.name}"
+        }
+
+
+# ============================================================================
+# Legacy Support (AIModule class)
+# ============================================================================
 
 class AIDecisionResult:
-    """AI 의사결정 결과"""
+    """AI 의사결정 결과 (레거시 호환)"""
     
-    def __init__(self, action: str, confidence: float, reasoning: str = "", 
-                 action_probs: Optional[Dict[str, float]] = None):
+    def __init__(self, action: str, confidence: float = 0.5, reasoning: str = ""):
         self.action = action
         self.confidence = confidence
         self.reasoning = reasoning
-        self.action_probs = action_probs or {}
         self.timestamp = time.time()
     
     def to_dict(self) -> Dict[str, Any]:
-        """딕셔너리로 변환 (웹 전송용)"""
         return {
             'action': self.action,
             'confidence': self.confidence,
             'reasoning': self.reasoning,
-            'action_probs': self.action_probs,
             'timestamp': self.timestamp
         }
 
 
 class AIModule:
     """
-    AI 모듈 - 강화학습 기반 게임 AI
+    AI 모듈 (레거시 호환용)
     
-    Chloe가 구현할 주요 기능:
-    1. PPO/DQN 정책 로드 및 추론
-    2. 실시간 의사결정
-    3. 자가 학습 데이터 수집
-    4. 성능 모니터링
+    새 코드에서는 AILevelManager 사용 권장
     """
     
     def __init__(self, model_path: Optional[str] = None, algorithm: str = "PPO"):
-        """
-        초기화
-        
-        Args:
-            model_path: 훈련된 모델 경로
-            algorithm: 사용할 알고리즘 ("PPO" 또는 "DQN")
-        """
-        self.model_path = model_path
-        self.algorithm = algorithm
-        # PyTorch가 없으면 device는 None (시뮬레이션 모드)
-        if TORCH_AVAILABLE:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = None
-        
-        # 모델들
-        self.policy_net = None
-        self.value_net = None
-        self.ppo_model = None
-        self.dqn_model = None
-        
-        # 성능 추적
-        self.decision_times = []
-        self.action_history = []
-        self.reward_history = []
-        
-        # RL 계측 (Chloe가 구현)
-        self.rl_logger = None
-        
-        # 초기화
-        self._initialize_model()
-    
-    def _initialize_model(self):
-        """
-        모델 초기화
-        
-        TODO for Chloe: 실제 PPO/DQN 모델 로드 구현
-        """
-        if self.model_path:
-            # TODO: 실제 구현
-            # if self.algorithm == "PPO":
-            #     self.ppo_model = PPO.load(self.model_path)
-            # elif self.algorithm == "DQN":
-            #     self.dqn_model = DQN.load(self.model_path)
-            
-            print(f"🤖 [Chloe TODO] {self.algorithm} 모델 로드: {self.model_path}")
-        else:
-            # 기본 정책 네트워크 (시뮬레이션용) - PyTorch가 있을 때만
-            if TORCH_AVAILABLE:
-                self.policy_net = PolicyNetwork().to(self.device)
-            print("⚠️ 모델 경로가 없습니다. 시뮬레이션 모드로 실행합니다.")
-        
-        # RL 계측 시스템 초기화
-        # TODO: self.rl_logger = RLInstrumentationLogger("web_game_ai")
+        self.level_manager = AILevelManager(ppo_model_path=model_path)
+        self.level_manager.set_level(2)  # Level 2 (PPO) 사용
     
     def make_decision(self, game_state: Dict[str, Any]) -> AIDecisionResult:
-        """
-        게임 상태를 보고 행동 결정
-        
-        Args:
-            game_state: 게임 엔진에서 받은 상태 정보
-            
-        Returns:
-            AI 의사결정 결과
-            
-        TODO for Chloe: 실제 PPO/DQN 추론 구현
-        """
-        start_time = time.perf_counter()
-        
-        if self.ppo_model or self.dqn_model:
-            # 실제 RL 모델 추론
-            result = self._real_rl_decision(game_state)
-        else:
-            # 시뮬레이션 모드
-            result = self._simulate_decision(game_state)
-        
-        # 성능 측정
-        decision_time = time.perf_counter() - start_time
-        self.decision_times.append(decision_time)
-        self.action_history.append(result.action)
-        
-        return result
-    
-    def _simulate_decision(self, game_state: Dict[str, Any]) -> AIDecisionResult:
-        """
-        시뮬레이션된 AI 의사결정 (현재 구현)
-        
-        Chloe가 _real_rl_decision()으로 교체할 예정
-        """
-        # 간단한 휴리스틱 기반 의사결정
-        player_y = game_state.get('player_y', 0.5)
-        obstacle_y = game_state.get('obstacle_y', 0.0)
-        obstacle_distance = game_state.get('obstacle_distance', 1.0)
-        time_to_collision = game_state.get('time_to_collision', 10.0)
-        
-        # 의사결정 로직
-        if time_to_collision < 1.0 and obstacle_distance < 0.3:
-            if player_y > 0.7:  # 플레이어가 아래쪽에 있으면
-                action = "jump"
-                reasoning = "장애물이 가까워서 점프"
-                confidence = 0.8
-            else:
-                action = "stay"
-                reasoning = "이미 위쪽에 있어서 대기"
-                confidence = 0.6
-        else:
-            # 랜덤 행동 (탐험)
-            actions = ["stay", "jump", "left", "right"]
-            weights = [0.4, 0.3, 0.15, 0.15]
-            action = np.random.choice(actions, p=weights)
-            reasoning = f"탐험적 행동: {action}"
-            confidence = 0.5
-        
-        # 행동 확률 분포 (시뮬레이션)
-        action_probs = {
-            "stay": 0.4,
-            "jump": 0.3,
-            "left": 0.15,
-            "right": 0.15
-        }
-        action_probs[action] += 0.2  # 선택된 행동의 확률 증가
-        
-        return AIDecisionResult(
-            action=action,
-            confidence=confidence,
-            reasoning=reasoning,
-            action_probs=action_probs
-        )
-    
-    def _real_rl_decision(self, game_state: Dict[str, Any]) -> AIDecisionResult:
-        """
-        실제 강화학습 모델 의사결정
-        
-        TODO for Chloe: 이 함수를 구현하세요!
-        
-        구현 가이드:
-        1. 게임 상태를 RL 모델 입력 형식으로 변환
-        2. PPO 또는 DQN 추론 실행
-        3. 행동 확률 분포 계산
-        4. 최적 행동 선택
-        5. 의사결정 근거 생성
-        """
-        try:
-            # 상태 벡터 생성
-            state_vector = self._create_state_vector(game_state)
-            
-            if self.algorithm == "PPO" and self.ppo_model:
-                # TODO: PPO 추론
-                # action, _states = self.ppo_model.predict(state_vector, deterministic=False)
-                # action_probs = self._get_action_probabilities(state_vector)
-                
-                # 임시: 시뮬레이션 호출
-                return self._simulate_decision(game_state)
-                
-            elif self.algorithm == "DQN" and self.dqn_model:
-                # TODO: DQN 추론
-                # action, _states = self.dqn_model.predict(state_vector, deterministic=False)
-                # q_values = self._get_q_values(state_vector)
-                
-                # 임시: 시뮬레이션 호출
-                return self._simulate_decision(game_state)
-            
-        except Exception as e:
-            print(f"❌ RL 모델 추론 오류: {e}")
-            # 오류 시 시뮬레이션으로 폴백
-            return self._simulate_decision(game_state)
-    
-    def _create_state_vector(self, game_state: Dict[str, Any]) -> np.ndarray:
-        """
-        게임 상태를 RL 모델 입력 벡터로 변환
-        
-        TODO for Chloe: 상태 표현 최적화
-        """
-        # 8차원 상태 벡터 생성
-        state_vector = np.array([
-            game_state.get('player_x', 0.5),
-            game_state.get('player_y', 0.5),
-            game_state.get('player_vy', 0.0),
-            game_state.get('on_ground', 0.0),
-            game_state.get('obstacle_x', 0.0),
-            game_state.get('obstacle_y', 0.0),
-            game_state.get('obstacle_distance', 1.0),
-            game_state.get('time_to_collision', 10.0)
-        ], dtype=np.float32)
-        
-        return state_vector
-    
-    def update_reward(self, reward: float, done: bool = False):
-        """
-        보상 업데이트 (자가 학습용)
-        
-        TODO for Chloe: 온라인 학습 구현
-        """
-        self.reward_history.append(reward)
-        
-        if self.rl_logger:
-            # TODO: RL 계측 시스템에 기록
-            # self.rl_logger.log_step(reward, done)
-            pass
-        
-        # 에피소드 종료 시 학습 (선택적)
-        if done and len(self.reward_history) > 100:
-            self._update_policy()
-    
-    def _update_policy(self):
-        """
-        정책 업데이트 (온라인 학습)
-        
-        TODO for Chloe: PPO/DQN 온라인 학습 구현
-        """
-        # TODO: 실제 정책 업데이트 구현
-        # 1. 경험 버퍼에서 배치 샘플링
-        # 2. 정책 그래디언트 계산
-        # 3. 모델 파라미터 업데이트
-        # 4. 성능 로깅
-        
-        print("🔄 [Chloe TODO] 정책 업데이트 실행")
-    
-    def get_performance_stats(self) -> Dict[str, Any]:
-        """성능 통계 반환"""
-        if not self.decision_times:
-            return {}
-        
-        avg_decision_time = np.mean(self.decision_times)
-        avg_reward = np.mean(self.reward_history) if self.reward_history else 0
-        
-        # 행동 분포 계산
-        action_counts = {}
-        for action in self.action_history:
-            action_counts[action] = action_counts.get(action, 0) + 1
-        
-        return {
-            'avg_decision_time_ms': avg_decision_time * 1000,
-            'avg_reward': avg_reward,
-            'total_decisions': len(self.action_history),
-            'action_distribution': action_counts,
-            'recent_actions': self.action_history[-10:],  # 최근 10개 행동
-            'algorithm': self.algorithm
-        }
-    
-    def reset_episode(self):
-        """에피소드 초기화"""
-        if self.rl_logger:
-            # TODO: 에피소드 종료 로깅
-            # self.rl_logger.log_episode_end(...)
-            pass
-        
-        # 히스토리 초기화 (선택적)
-        if len(self.action_history) > 1000:  # 메모리 관리
-            self.action_history = self.action_history[-500:]
-            self.reward_history = self.reward_history[-500:]
-    
-    def save_model(self, save_path: str):
-        """
-        모델 저장
-        
-        TODO for Chloe: 훈련된 모델 저장 구현
-        """
-        if self.ppo_model:
-            self.ppo_model.save(save_path)
-        elif self.dqn_model:
-            self.dqn_model.save(save_path)
-        else:
-            # PyTorch 모델 저장
-            if TORCH_AVAILABLE and self.policy_net:
-                torch.save(self.policy_net.state_dict(), save_path)
-        
-        print(f"💾 모델 저장 완료: {save_path}")
+        action = self.level_manager.make_decision(game_state)
+        if action is None:
+            action = 'stay'
+        return AIDecisionResult(action=action)
 
 
-# Chloe가 사용할 헬퍼 함수들
-def create_reward_function(game_state: Dict[str, Any], action: str, next_state: Dict[str, Any]) -> float:
-    """
-    보상 함수 설계
-    
-    TODO for Chloe: 게임에 맞는 보상 함수 구현
-    """
-    reward = 0.0
-    
-    # 생존 보상
-    if not next_state.get('game_over', False):
-        reward += 1.0
-    
-    # 충돌 페널티
-    if next_state.get('game_over', False):
-        reward -= 100.0
-    
-    # 점수 증가 보상
-    score_diff = next_state.get('score', 0) - game_state.get('score', 0)
-    reward += score_diff * 10.0
-    
-    # 불필요한 행동 페널티 (선택적)
-    if action in ["left", "right"] and game_state.get('obstacle_distance', 1.0) > 0.5:
-        reward -= 0.1
-    
-    return reward
+# ============================================================================
+# Test
+# ============================================================================
 
-
-def analyze_failure_mode(game_state: Dict[str, Any], action: str) -> str:
-    """
-    실패 모드 분석
-    
-    Chloe가 디버깅용으로 사용할 수 있는 함수
-    """
-    if game_state.get('game_over', False):
-        obstacle_distance = game_state.get('obstacle_distance', 1.0)
-        time_to_collision = game_state.get('time_to_collision', 10.0)
-        
-        if obstacle_distance < 0.2 and action == "stay":
-            return "회피 실패: 장애물이 가까운데 행동하지 않음"
-        elif time_to_collision < 0.5 and action in ["left", "right"]:
-            return "잘못된 회피: 점프 대신 좌우 이동"
-        else:
-            return "일반적인 충돌"
-    
-    return "정상"
-
-
-# 사용 예시 (Chloe가 참고할 코드)
 if __name__ == "__main__":
-    # AI 모듈 초기화
-    ai_module = AIModule(
-        model_path="path/to/ppo_model.zip",  # Chloe가 훈련한 모델
-        algorithm="PPO"
-    )
-    
     # 테스트 게임 상태
     test_state = {
-        'player_x': 0.5,
-        'player_y': 0.8,
-        'player_vy': 0.0,
-        'on_ground': 1.0,
-        'obstacle_x': 0.6,
-        'obstacle_y': 0.3,
-        'obstacle_distance': 0.4,
-        'time_to_collision': 2.0
+        'player': {
+            'x': 480,
+            'y': 670,
+            'vy': 0,
+            'size': 50,
+            'health': 100
+        },
+        'obstacles': [
+            {'type': 'meteor', 'x': 500, 'y': 200, 'size': 50, 'vx': 0, 'vy': 5},
+            {'type': 'star', 'x': 300, 'y': 400, 'size': 30, 'vx': 0, 'vy': 3}
+        ],
+        'lava': {
+            'state': 'inactive',
+            'zone_x': 0,
+            'zone_width': 320,
+            'height': 120
+        },
+        'score': 50,
+        'frame': 100
     }
     
-    # AI 의사결정
-    decision = ai_module.make_decision(test_state)
+    # AI Level Manager 테스트
+    ai_manager = AILevelManager(ppo_model_path="models/rl/ppo_agent.pt")
     
-    # 결과 출력
-    print(f"선택된 행동: {decision.action}")
-    print(f"신뢰도: {decision.confidence:.2f}")
-    print(f"근거: {decision.reasoning}")
-    
-    # 성능 통계
-    stats = ai_module.get_performance_stats()
-    print(f"평균 의사결정 시간: {stats.get('avg_decision_time_ms', 0):.1f}ms")
+    for level in [1, 2, 3, 4]:
+        ai_manager.set_level(level)
+        action = ai_manager.make_decision(test_state)
+        info = ai_manager.get_level_info()
+        print(f"Level {level} ({info['name']}): Action = {action}")

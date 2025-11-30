@@ -481,8 +481,7 @@ def on_start_game(data):
     # 🔧 버그 수정: 게임 시작 시 명시적으로 "stay" 액션 전송
     if mode == "human":
         # 클라이언트에 "stay" 액션을 명시적으로 알림 (초기 움직임 방지)
-        socketio.emit("player_action", {"action": "stay"}, namespace='/', to=current_sid)
-
+        socketio.emit("player_action", {"action": "stay"}, namespace="/", to=current_sid)
     # 초기 상태 전송
     payload = build_state_payload(state, 0.0)
     socketio.emit("game_started", {"state": payload}, namespace='/')
@@ -562,16 +561,6 @@ def on_frame_capture(data):
 # ==========================
 
 if __name__ == "__main__":
-    import argparse
-    
-    # 명령줄 인자 파싱
-    parser = argparse.ArgumentParser(description='Run the game server')
-    parser.add_argument('--port', type=int, default=None, help='Port number (default: 5000 or PORT env var)')
-    args = parser.parse_args()
-    
-    # 포트 설정: 명령줄 인자 > 환경 변수 > 기본값
-    port = args.port or int(os.getenv('PORT', 5000))
-    
     print("✅ Loading YOLO model:", YOLO_MODEL_PATH)
     yolo_model = YOLO(YOLO_MODEL_PATH)
 
@@ -579,5 +568,4 @@ if __name__ == "__main__":
     ppo_agent = load_ppo_for_web(PPO_MODEL_PATH)
 
     # Flask+SocketIO 서버 실행
-    print(f"🚀 Starting server on port {port}")
-    socketio.run(app, host="0.0.0.0", port=port, debug=True)
+    socketio.run(app, host="0.0.0.0", port=5000, debug=True)
